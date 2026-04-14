@@ -1,70 +1,126 @@
 import os
 import time
-import osimfit
 import opensim as osim
-from copy import deepcopy
+from osimfit.data_sources import C3DSource
+from osimfit.scaling import PositionDataScaler, FrameMeasurement, Axis, ScaleFactor, \
+                            AnthropometricScaler, AnthropometricMeasurement
 
+# STEP 1: POSITION-BASED SCALING
+# ------------------------------
 
+# data_label --> model_frame
+frame_map = {
+    'l_thigh': '/jointset/hip_l/femur_l_offset/l_thigh',
+    'l_shank': '/jointset/walker_knee_l/tibia_l_offset/l_shank',
+    'l_foot': '/jointset/ankle_l/talus_l_offset/l_foot',
+    'l_toes': '/jointset/mtp_l/toes_l_offset/l_toes',
+    'r_thigh': '/jointset/hip_r/femur_r_offset/r_thigh',
+    'r_shank': '/jointset/walker_knee_r/tibia_r_offset/r_shank',
+    'r_foot': '/jointset/ankle_r/talus_r_offset/r_foot',
+    'r_toes': '/jointset/mtp_r/toes_r_offset/r_toes',
+    'l_uarm': '/jointset/acromial_l/humerus_l_offset/l_uarm',
+    'l_larm': '/jointset/elbow_l/ulna_l_offset/l_larm',
+    'l_hand': '/jointset/radius_hand_l/hand_l_offset/l_hand',
+    'r_uarm': '/jointset/acromial_r/humerus_r_offset/r_uarm',
+    'r_larm': '/jointset/elbow_r/ulna_r_offset/r_larm',
+    'r_hand': '/jointset/radius_hand_r/hand_r_offset/r_hand',
+    'pelvis': '/bodyset/pelvis/pelvis',
+    'torso': '/bodyset/torso/torso',
+}
+
+# segment_name --> [data_label_1, data_label_2, axis]
+scale_map = {
+    'pelvis': ['pelvis', 'torso', Axis.YAxis],
+    'pelvis': ['l_thigh', 'r_thigh', Axis.ZAxis],
+    'torso': ['torso', 'pelvis', Axis.YAxis],
+    'torso': ['l_uarm', 'r_uarm', Axis.ZAxis],
+    'humerus_r': ['r_uarm', 'r_larm', Axis.YAxis],
+    'humerus_l': ['l_uarm', 'l_larm', Axis.YAxis],
+    'radius_r': ['r_larm', 'r_hand', Axis.YAxis],
+    'radius_l': ['l_larm', 'l_hand', Axis.YAxis],
+    'femur_r': ['r_thigh', 'r_shank', Axis.YAxis],
+    'femur_l': ['l_thigh', 'l_shank', Axis.YAxis],
+    'tibia_r': ['r_shank', 'r_foot', Axis.YAxis],
+    'tibia_l': ['l_shank', 'l_foot', Axis.YAxis],
+    'calcn_r': ['r_foot', 'r_toes', Axis.XAxis],
+    'calcn_r': ['r_foot', 'r_toes', Axis.YAxis],
+    'calcn_l': ['l_foot', 'l_toes', Axis.XAxis],
+    'calcn_l': ['l_foot', 'l_toes', Axis.YAxis]
+}
+
+# Scale a model from position-based (e.g., Vec3) data.
 model = osim.Model('unscaled_generic.osim')
-c3d_source = osimfit.C3DSource('pose_0.c3d')
-scaler = osimfit.ModelScaler(model, c3d_source)
+c3d_source = C3DSource('pose_0.c3d')
+position_scaler = PositionDataScaler(model, c3d_source)
 
+# Add scales.
+for segment_name, (data_label_1, data_label_2, axis) in scale_map.items():
+    measurement = FrameMeasurement(frame_map[data_label_1], frame_map[data_label_2])
+    scale_factor = ScaleFactor(data_label_1, data_label_2, measurement, axis)
+    position_scaler.add_scale(segment_name, scale_factor)
 
-scaler.register_frame('l_shank', '/jointset/walker_knee_l/tibia_l_offset/l_shank')
-scaler.register_frame('l_foot', '/jointset/ankle_l/talus_l_offset/l_foot')
-scaler.register_frame('l_toes', '/jointset/mtp_l/toes_l_offset/l_toes')
-scaler.register_frame('r_thigh', '/jointset/hip_r/femur_r_offset/r_thigh')
-scaler.register_frame('r_shank', '/jointset/walker_knee_r/tibia_r_offset/r_shank')
-scaler.register_frame('r_foot', '/jointset/ankle_r/talus_r_offset/r_foot')
-scaler.register_frame('r_toes', '/jointset/mtp_r/toes_r_offset/r_toes')
-scaler.register_frame('l_uarm', '/jointset/acromial_l/humerus_l_offset/l_uarm')
-scaler.register_frame('l_larm', '/jointset/elbow_l/ulna_l_offset/l_larm')
-scaler.register_frame('l_thigh', '/jointset/hip_l/femur_l_offset/l_thigh')
-scaler.register_frame('l_hand', '/jointset/radius_hand_l/hand_l_offset/l_hand')
-scaler.register_frame('r_uarm', '/jointset/acromial_r/humerus_r_offset/r_uarm')
-scaler.register_frame('r_larm', '/jointset/elbow_r/ulna_r_offset/r_larm')
-scaler.register_frame('r_hand', '/jointset/radius_hand_r/hand_r_offset/r_hand')
-scaler.register_frame('pelvis', '/bodyset/pelvis/pelvis')
-scaler.register_frame('torso',  '/bodyset/torso/torso')
+# Add symmetry pairs.
+position_scaler.add_symmetry_pair('humerus_l', 'humerus_r')
+position_scaler.add_symmetry_pair('radius_l', 'radius_r')
+position_scaler.add_symmetry_pair('femur_l', 'femur_r')
+position_scaler.add_symmetry_pair('tibia_l', 'tibia_r')
+position_scaler.add_symmetry_pair('calcn_l', 'calcn_r')
 
-
-scaler.add_frame_measurement('pelvis', 'pelvis', 'torso', osimfit.Axis.YAxis)
-scaler.add_frame_measurement('pelvis', 'l_thigh', 'r_thigh', osimfit.Axis.ZAxis)
-scaler.add_frame_measurement('torso', 'torso', 'pelvis', osimfit.Axis.YAxis)
-scaler.add_frame_measurement('torso', 'l_uarm', 'r_uarm', osimfit.Axis.ZAxis)
-scaler.add_frame_measurement('humerus_r', 'r_uarm', 'r_larm', osimfit.Axis.YAxis)
-scaler.add_frame_measurement('humerus_l', 'l_uarm', 'l_larm', osimfit.Axis.YAxis)
-scaler.add_frame_measurement('radius_r', 'r_larm', 'r_hand', osimfit.Axis.YAxis)
-scaler.add_frame_measurement('radius_l', 'l_larm', 'l_hand', osimfit.Axis.YAxis)
-scaler.add_frame_measurement('femur_r', 'r_thigh', 'r_shank', osimfit.Axis.YAxis)
-scaler.add_frame_measurement('femur_l', 'l_thigh', 'l_shank', osimfit.Axis.YAxis)
-scaler.add_frame_measurement('tibia_r', 'r_shank', 'r_foot', osimfit.Axis.YAxis)
-scaler.add_frame_measurement('tibia_l', 'l_shank', 'l_foot', osimfit.Axis.YAxis)
-scaler.add_frame_measurement('calcn_r', 'r_foot', 'r_toes', osimfit.Axis.XAxis)
-scaler.add_frame_measurement('calcn_r', 'r_foot', 'r_toes', osimfit.Axis.YAxis)
-scaler.add_frame_measurement('calcn_l', 'l_foot', 'l_toes', osimfit.Axis.XAxis)
-scaler.add_frame_measurement('calcn_l', 'l_foot', 'l_toes', osimfit.Axis.YAxis)
-
-
-scaler.add_symmetry_pair('l_uarm', 'r_uarm')
-scaler.add_symmetry_pair('l_larm', 'r_larm')
-scaler.add_symmetry_pair('l_thigh', 'r_thigh')
-scaler.add_symmetry_pair('l_shank', 'r_shank')
-scaler.add_symmetry_pair('l_foot', 'r_foot')
-scaler.add_symmetry_pair('l_toes', 'r_toes')
-
-
-scaled_model  = scaler.scale()
+# Scale the model.
+scaled_model = position_scaler.scale()
 scaled_model.printToXML('jump_1_scaled.osim')
 
 
+# STEP 2: ANTHROPOMETRIC SCALING
+# ------------------------------
 
-# # Step 4: Adjust anthropometry.
-# # ------------------------------
-# scaled_model_fpath = os.path.join(trial_path, f'{scaled_model_name}.osim')
-# anthropometrics_fpath = os.path.join('anthropometrics', 'ANSUR_II_FEMALE_Public.csv')
-# adjusted_model_fpath = os.path.join(trial_path, f'{scaled_model_name}_adjusted.osim')
-# adjust_anthropometry(scaled_model_fpath, anthropometrics_fpath, adjusted_model_fpath)
+# ansur_label --> (station1_path, station2_path, axis)
+ansur_measurements = {
+    'biacromialbreadth':      ('/acromion_r', '/acromion_l', None),
+    'bicristalbreadth':       ('/iliocrestale_r', '/iliocrestale_l', None),
+    'bimalleolarbreadth':     ('/lateral_malleolus_r', '/medial_malleolus_r', None),
+    'footbreadthhorizontal':  ('/mtp1_r', '/mtp5_r', Axis.ZAxis),
+    'footlength':             ('/acropodion_r', '/pternion_r', Axis.XAxis),
+    # 'headbreadth':            ('/euryon_r', '/euryon_l', None),
+    # 'headlength':             ('/glabella', '/opisthocranion', None),
+    'iliocristaleheight':     ('/iliocrestale_r', '/mtp5_r', Axis.YAxis),
+    'lateralmalleolusheight': ('/lateral_malleolus_r', '/mtp5_r', Axis.YAxis),
+    'radialestylionlength':   ('/radiale_r', '/stylion_r', None),
+    'shoulderelbowlength':    ('/acromion_r', '/olecranon_r', None),
+    'stature':                ('/vertex', '/mtp5_r', Axis.YAxis),
+    'suprasternaleheight':    ('/suprasternale', '/mtp5_r', Axis.YAxis),
+    'tibialheight':           ('/tibiale_r', '/mtp5_r', Axis.YAxis),
+    'trochanterionheight':    ('/trochanterion_r', '/mtp5_r', Axis.YAxis),
+    'waistbacklength':        ('/cervicale', '/posterior_omphalion', None),
+    'waistdepth':             ('/posterior_omphalion', '/anterior_omphalion', None)
+}
+
+
+anthropometric_scaler = AnthropometricScaler(scaled_model, sex='female')
+
+for ansur_label, (station1_path, station2_path, axis) in ansur_measurements.items():
+    measurement = AnthropometricMeasurement(station1_path, station2_path, axis)
+    anthropometric_scaler.add_measurement(ansur_label, measurement)
+
+# anthropometric_scaler.add_scale_factor('torso', 'waistdepth', Axis.XAxis)
+anthropometric_scaler.add_scale_factor('torso', 'biacromialbreadth', Axis.ZAxis)
+anthropometric_scaler.add_scale_factor('pelvis', 'bicristalbreadth', Axis.ZAxis)
+anthropometric_scaler.add_scale_factor('tibia_r', 'bimalleolarbreadth', Axis.YAxis)
+anthropometric_scaler.add_scale_factor('tibia_r', 'bimalleolarbreadth', Axis.ZAxis)
+anthropometric_scaler.add_scale_factor('tibia_l', 'bimalleolarbreadth', Axis.YAxis)
+anthropometric_scaler.add_scale_factor('tibia_l', 'bimalleolarbreadth', Axis.ZAxis)
+anthropometric_scaler.add_scale_factor('calcn_r', 'footlength', Axis.XAxis)
+# anthropometric_scaler.add_scale_factor('calcn_r', 'lateralmalleolusheight', Axis.YAxis)
+anthropometric_scaler.add_scale_factor('calcn_r', 'footbreadthhorizontal', Axis.ZAxis)
+anthropometric_scaler.add_scale_factor('calcn_l', 'footlength', Axis.XAxis)
+# anthropometric_scaler.add_scale_factor('calcn_l', 'lateralmalleolusheight', Axis.YAxis)
+anthropometric_scaler.add_scale_factor('calcn_l', 'footbreadthhorizontal', Axis.ZAxis)
+
+
+anthro_scaled_model = anthropometric_scaler.scale()
+anthro_scaled_model.printToXML('jump_1_anthro_scaled.osim')
+
+
 
 # # Step 5: Inverse kinematics.
 # # ---------------------------
