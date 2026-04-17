@@ -1,9 +1,10 @@
 import os
 import time
 import opensim as osim
-from osimfit.data_sources import C3DSource
+from osimfit.data_sources import TheiaFrameSource
 from osimfit.scaling import PositionDataScaler, FrameMeasurement, Axis, ScaleFactor, \
                             AnthropometricScaler, AnthropometricMeasurement
+from osimfit.solvers import InverseKinematicsSolver
 
 # STEP 1: POSITION-BASED SCALING
 # ------------------------------
@@ -50,7 +51,7 @@ scale_map = {
 
 # Scale a model from position-based (e.g., Vec3) data.
 model = osim.Model('unscaled_generic.osim')
-c3d_source = C3DSource('pose_0.c3d')
+c3d_source = TheiaFrameSource('pose_0.c3d')
 position_scaler = PositionDataScaler(model, c3d_source)
 
 # Add scales.
@@ -81,8 +82,6 @@ ansur_measurements = {
     'bimalleolarbreadth':     ('/lateral_malleolus_r', '/medial_malleolus_r', None),
     'footbreadthhorizontal':  ('/mtp1_r', '/mtp5_r', Axis.ZAxis),
     'footlength':             ('/acropodion_r', '/pternion_r', Axis.XAxis),
-    # 'headbreadth':            ('/euryon_r', '/euryon_l', None),
-    # 'headlength':             ('/glabella', '/opisthocranion', None),
     'iliocristaleheight':     ('/iliocrestale_r', '/mtp5_r', Axis.YAxis),
     'lateralmalleolusheight': ('/lateral_malleolus_r', '/mtp5_r', Axis.YAxis),
     'radialestylionlength':   ('/radiale_r', '/stylion_r', None),
@@ -102,7 +101,6 @@ for ansur_label, (station1_path, station2_path, axis) in ansur_measurements.item
     measurement = AnthropometricMeasurement(station1_path, station2_path, axis)
     anthropometric_scaler.add_measurement(ansur_label, measurement)
 
-# anthropometric_scaler.add_scale_factor('torso', 'waistdepth', Axis.XAxis)
 anthropometric_scaler.add_scale_factor('torso', 'biacromialbreadth', Axis.ZAxis)
 anthropometric_scaler.add_scale_factor('pelvis', 'bicristalbreadth', Axis.ZAxis)
 anthropometric_scaler.add_scale_factor('tibia_r', 'bimalleolarbreadth', Axis.YAxis)
@@ -110,45 +108,43 @@ anthropometric_scaler.add_scale_factor('tibia_r', 'bimalleolarbreadth', Axis.ZAx
 anthropometric_scaler.add_scale_factor('tibia_l', 'bimalleolarbreadth', Axis.YAxis)
 anthropometric_scaler.add_scale_factor('tibia_l', 'bimalleolarbreadth', Axis.ZAxis)
 anthropometric_scaler.add_scale_factor('calcn_r', 'footlength', Axis.XAxis)
-# anthropometric_scaler.add_scale_factor('calcn_r', 'lateralmalleolusheight', Axis.YAxis)
 anthropometric_scaler.add_scale_factor('calcn_r', 'footbreadthhorizontal', Axis.ZAxis)
 anthropometric_scaler.add_scale_factor('calcn_l', 'footlength', Axis.XAxis)
-# anthropometric_scaler.add_scale_factor('calcn_l', 'lateralmalleolusheight', Axis.YAxis)
 anthropometric_scaler.add_scale_factor('calcn_l', 'footbreadthhorizontal', Axis.ZAxis)
-
 
 anthro_scaled_model = anthropometric_scaler.scale()
 anthro_scaled_model.printToXML('jump_1_anthro_scaled.osim')
 
 
+# STEP 3: INVERSE KINEMATICS
+# --------------------------
+columns_to_remove = ['worldbody', 'head', 'pelvis_shifted', 'l_clavicle', 'r_clavicle']
 
-# # Step 5: Inverse kinematics.
-# # ---------------------------
-# # Using CasADi (https://web.casadi.org/), create a custom inverse kinematics problem
-# # that minimizes the error between model and Theia frame positions and orientations.
+positions = c3d_source.get_positions_table()
+TheiaFrameSource.remove_columns(positions, columns_to_remove)
+TheiaFrameSource.update_column_labels(positions, frame_map)
 
-# # Cost function weights.
-# # - position: squared norm of frame position errors (in m^2)
-# # - orientation: quaternion distance of frame orientation errors (between [0, 1])
-# # - smoothness: sum of squared differences in generalized coordinates between current
-# #               and previous time step (in rad^2 or m^2)
-# weights = {'position': 2.0,
-#            'orientation': 5.0,
-#            'smoothness': 0.5}
+orientations = c3d_source.get_orientations_table()
+TheiaFrameSource.remove_columns(orientations, columns_to_remove)
+TheiaFrameSource.update_column_labels(orientations, frame_map)
 
-# # Convergence tolerance: controls various IPOPT tolerances (e.g., primal and dual
-# # feasibility, acceptable tol, etc.).
-# convergence_tolerance = 1e-4
+solver = InverseKinematicsSolver(anthro_scaled_model, positions, orientations,
+                                 finite_differences=False,
+                                 convergence_tolerance=1e-4,
+                                 position_weight=2.0,
+                                 orientation_weight=5.0,
+                                 smoothness_weight=0.5)
 
-# # Whether or not to compute the tracking cost derivative using finite differences. By
-# # default, we set this to False to use an analytical derivatives computed from Simbody,
-# # which is roughly 10X faster.
-# finite_differences = False
+states = solver.solve()
+sto = osim.STOFileAdapter()
+sto.write(states, 'jump_1_ik_solution.sto')
 
-# # Run inverse kinematics.
-# start_time = time.time()
-# run_inverse_kinematics(adjusted_model_fpath, trial_path, c3d_filename, offset_frame_map,
-#                        weights, convergence_tolerance,
-#                        finite_differences=finite_differences)
-# end_time = time.time()
-# print(f"Inverse kinematics took {end_time - start_time:.2f} seconds")
+# modelProcessor = osim.ModelProcessor('jump_1_anthro_scaled.osim')
+# modelProcessor.append(osim.ModOpRemoveMuscles())
+# model = modelProcessor.process()
+# model.initSystem()
+
+# states = osim.TimeSeriesTable('jump_1_ik_solution.sto')
+# states.addTableMetaDataString('inDegrees', 'no')
+
+# osim.VisualizerUtilities.showMotion(model, states)

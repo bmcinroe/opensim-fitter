@@ -1,9 +1,9 @@
-from abc import ABC, abstractmethod
 import os
 import numpy as np
 import pandas as pd
-from enum import Enum
 import opensim as osim
+from enum import Enum
+from abc import ABC, abstractmethod
 from .data_sources import DataSource
 from .utilities import MultivariateNormal
 
