@@ -117,6 +117,16 @@ class TrackingCostMixin:
         # Cost function weights.
         self.weights = weights
 
+    def update_data(self, positions, quaternions):
+        for i in range(positions.size()):
+            self.positions[:, i] = positions[i].to_numpy()
+        for i in range(quaternions.size()):
+            quaternion = quaternions.getElt(0, i)
+            self.quaternions[0, i] = quaternion.get(0)
+            self.quaternions[1, i] = quaternion.get(1)
+            self.quaternions[2, i] = quaternion.get(2)
+            self.quaternions[3, i] = quaternion.get(3)
+
     def _get_num_inputs(self):
         return len(self.coordinate_indexes)
 

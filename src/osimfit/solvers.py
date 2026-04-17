@@ -15,14 +15,10 @@ class Solver(ABC):
         pass
 
 
-# weights = {'position': 2.0,
-#            'orientation': 5.0,
-#            'smoothness': 0.5}
-
 class InverseKinematicsSolver(Solver):
 
     def __init__(self, model, positions, orientations, convergence_tolerance=1e-6,
-                 finite_differences=False, position_weight=1.0, orientation_weight=1.0,
+                 position_weight=1.0, orientation_weight=1.0,
                  smoothness_weight=0.01):
 
         # Load the model.
@@ -45,47 +41,25 @@ class InverseKinematicsSolver(Solver):
 
         # Optimization settings.
         self.convergence_tolerance = convergence_tolerance
-        self.finite_differences = finite_differences
         self.position_weight = position_weight
         self.orientation_weight = orientation_weight
         self.smoothness_weight = smoothness_weight
 
-    def run_optimization(self, frame_paths, positions, quaternions,
-                     weights, x0, lbx, ubx):
-        # Declare optimization variables.
+
+    def _build_solver(self, frame_paths, positions, quaternions, weights):
         x = ca.SX.sym('x', len(self.coordinate_indexes))
-
-        # Construct the callback function defining the tracking cost.
-        # If 'finite_differences' is True, the Jacobian will be computed using finite
-        # differences. Otherwise, a callback function that provides an analytical
-        # Jacobian will be used.
-        if self.finite_differences:
-            track = TrackingCostCallback('tracking_cost', self.model,
-                                         self.coordinate_indexes,
-                                         frame_paths, positions, quaternions,
-                                         weights, {'enable_fd': True})
-        else:
-            track = TrackingCostJacobianCallback('tracking_cost', self.model,
-                                                 self.coordinate_indexes,
-                                                 frame_paths, positions, quaternions,
-                                                 weights)
-        tracking_cost = ca.Function('f', [x], [track(x)])
-
-        # The total cost function includes a smoothness term to penalize large
-        # deviations from the previous solution.
-        f = tracking_cost(x) + weights['smoothness'] * ca.sumsqr(x - x0)
-
-        # Form the non-linear program (NLP).
-        nlp = {'x': x, 'f': f}
-
-        # Allocate a solver.
+        p = ca.SX.sym('p', len(self.coordinate_indexes))
+        callback = TrackingCostJacobianCallback('tracking_cost', self.model,
+                                                self.coordinate_indexes,
+                                                frame_paths, positions, quaternions,
+                                                weights)
+        tracking_cost = ca.Function('f', [x], [callback(x)])
+        f = tracking_cost(x) + weights['smoothness'] * ca.sumsqr(x - p)
+        nlp = {'x': x, 'p': p, 'f': f}
         opts = {}
         opts['ipopt'] = get_ipopt_options(self.convergence_tolerance)
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
-
-        # Solve the NLP.
-        sol = solver(x0=x0, lbx=lbx, ubx=ubx)
-        return sol
+        return callback, solver
 
     def solve(self) -> osim.TimeSeriesTable:
 
@@ -111,14 +85,27 @@ class InverseKinematicsSolver(Solver):
         # Solve position-only optimization to create an inital guess for the full IK
         # problem.
         print('Solving initial guess optimization...')
-        sol = self.run_optimization(frame_paths,
-                                    self.positions.getRowAtIndex(0),
-                                    self.orientations.getRowAtIndex(0),
-                                    {'position': 10.0*self.position_weight,
-                                     'orientation': 0.1*self.orientation_weight,
-                                     'smoothness': 0.01*self.smoothness_weight},
-                                    x0, lbx, ubx)
+        callback, solver = self._build_solver(
+            frame_paths,
+            self.positions.getRowAtIndex(0),
+            self.orientations.getRowAtIndex(0),
+            {'position': 10.0*self.position_weight,
+             'orientation': 0.1*self.orientation_weight,
+             'smoothness': 0.01*self.smoothness_weight}
+        )
+        sol = solver(x0=x0, lbx=lbx, ubx=ubx, p=x0)
         x0 = sol['x']
+
+        # Build the callback and solver once for the main time-stepping loop.
+        weights = {'position': self.position_weight,
+                   'orientation': self.orientation_weight,
+                   'smoothness': self.smoothness_weight}
+        callback, solver = self._build_solver(
+            frame_paths,
+            self.positions.getRowAtIndex(0),
+            self.orientations.getRowAtIndex(0),
+            weights
+        )
 
         # Iterate over all of the time steps in the tracking data and solve the
         # optimization problem at each time step.
@@ -126,22 +113,18 @@ class InverseKinematicsSolver(Solver):
         for itime, time in enumerate(times):
             print(f'Solving time {itime+1} of {len(times)} (t={time:.3f} s)...')
 
-            # Construct the callback function defining the tracking cost.
-            sol = self.run_optimization(frame_paths,
-                                        self.positions.getRowAtIndex(itime),
-                                        self.orientations.getRowAtIndex(itime),
-                                        {'position': self.position_weight,
-                                         'orientation': self.orientation_weight,
-                                         'smoothness': self.smoothness_weight},
-                                        x0, lbx, ubx)
+            callback.update_data(self.positions.getRowAtIndex(itime),
+                                 self.orientations.getRowAtIndex(itime))
+            sol = solver(x0=x0, lbx=lbx, ubx=ubx, p=x0)
 
-            # Save solution
-            state = self.model.initSystem()
-            state.setTime(time)
-            q = np.zeros(state.getNQ())
+            # Write solution into callback.state — avoids calling initSystem() again,
+            # which would invalidate the state handle held by the callback.
+            # StatesTrajectory.append() copies the state by value, so reuse is safe.
+            callback.state.setTime(time)
+            q = np.zeros(callback.state.getNQ())
             q[self.coordinate_indexes] = np.squeeze(sol['x'].full())
-            state.setQ(osim.Vector.createFromMat(q))
-            statesTraj.append(state)
+            callback.state.setQ(osim.Vector.createFromMat(q))
+            statesTraj.append(callback.state)
 
             # Use the solution for the current time step as the initial guess for the next
             # time step.
