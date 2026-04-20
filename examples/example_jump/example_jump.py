@@ -128,6 +128,7 @@ orientations = c3d_source.get_orientations_table()
 TheiaFrameSource.remove_columns(orientations, columns_to_remove)
 TheiaFrameSource.update_column_labels(orientations, frame_map)
 
+# Run the frame-by-frame IK solver.
 weights = {'position': 2.0, 'orientation': 5.0, 'smoothness': 0.5}
 solver = InverseKinematicsSolver(anthro_scaled_model, positions, orientations,
                                  convergence_tolerance=1e-4, weights=weights)
@@ -135,6 +136,7 @@ ik_solution = solver.solve()
 sto = osim.STOFileAdapter()
 sto.write(ik_solution, 'jump_1_ik_solution.sto')
 
+# Run the spline IK solver, initialized with the frame-by-frame solution.
 weights = {'position': 2.0, 'orientation': 5.0}
 solver = SplineInverseKinematicsSolver(anthro_scaled_model, positions, orientations,
                                         convergence_tolerance=1e-4, weights=weights,
@@ -142,7 +144,8 @@ solver = SplineInverseKinematicsSolver(anthro_scaled_model, positions, orientati
 spline_ik_solution  = solver.solve(ik_solution)
 sto.write(spline_ik_solution, 'jump_1_spline_ik_solution.sto')
 
-
+# STEP 4: VISUALIZATION
+# ---------------------
 modelProcessor = osim.ModelProcessor('jump_1_anthro_scaled.osim')
 modelProcessor.append(osim.ModOpRemoveMuscles())
 model = modelProcessor.process()
