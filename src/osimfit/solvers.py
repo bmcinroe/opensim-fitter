@@ -41,7 +41,7 @@ class Solver(ABC):
         self.weights = weights
 
     @abstractmethod
-    def solve(self) -> osim.TimeSeriesTable:
+    def solve(self, guess=None) -> osim.TimeSeriesTable:
         pass
 
 
@@ -66,7 +66,12 @@ class InverseKinematicsSolver(Solver):
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
         return callback, solver
 
-    def solve(self) -> osim.TimeSeriesTable:
+    def solve(self, guess=None) -> osim.TimeSeriesTable:
+
+        if guess is not None:
+            raise ValueError(f'InverseKinematicsSolver does not currently support '
+                             f'using an initial guess, but got a guess with '
+                             f"{guess.getNumRows()} rows.")
 
         # Load tracking data
         # ------------------
@@ -144,14 +149,15 @@ class SplineInverseKinematicsSolver(Solver):
         self.degree = degree
         self.knot_interval = knot_interval
 
-    def _build_knots_vector(self, num_knots):
+    def _build_knots_vector(self, times, num_knots):
         # Clamped knot vector. For n control points and degree p, there are n+p+1 knots.
-        # The first and last p+1 knots are clamped to 0 and 1, respectively, and the
-        # interior knots are uniformly spaced in (0, 1).
+        # The first and last p+1 knots are clamped to the first and last time,
+        # respectively, and the interior knots are uniformly spaced between the first
+        # and last time.
         knots = np.concatenate([
-            np.repeat(0.0, self.degree),
-            np.linspace(0, 1, num_knots - self.degree + 1),
-            np.repeat(1.0, self.degree),
+            np.repeat(times[0], self.degree),
+            np.linspace(times[0], times[-1], num_knots - self.degree + 1),
+            np.repeat(times[-1], self.degree),
         ])
         return knots
 
@@ -175,17 +181,28 @@ class SplineInverseKinematicsSolver(Solver):
 
         return ca.DM(B)
 
-    def solve(self, ik_solution=None) -> osim.TimeSeriesTable:
+    def _extract_coordinate_initial_guess(self, guess, B, coord_path):
+        q_col = guess.getDependentColumn(coord_path + '/value').to_numpy()
+        q_guess, _, _, _ = np.linalg.lstsq(np.array(B), q_col, rcond=None)
+        return q_guess.tolist()
+
+    def solve(self, guess=None) -> osim.TimeSeriesTable:
 
         # Preliminaries.
         # --------------
+        if guess is not None and guess.getNumRows() != self.positions.getNumRows():
+            raise ValueError(f'Expected the initial guess to have the same number of '
+                             f'rows as the tracking data, but got {guess.getNumRows()} '
+                             f'and {self.positions.getNumRows()} rows, respectively.')
+
         # Define the (normalized) time vector.
-        num_times = self.positions.getNumRows()
-        times = np.linspace(0, 1, num_times)
+        times = self.positions.getIndependentColumn()
+        dt = times[1] - times[0]
+        num_times = len(times)
 
         # Define the knot vector.
-        num_knots = int(self.positions.getIndependentColumn()[-1] / self.knot_interval)
-        knots = self._build_knots_vector(num_knots)
+        num_knots = int(times[-1] / self.knot_interval)
+        knots = self._build_knots_vector(times, num_knots)
 
         # Pre-compute the spline basis matrix, which is independent of the optimization
         # variables.
@@ -197,25 +214,12 @@ class SplineInverseKinematicsSolver(Solver):
         x0 = []
         lbx = []
         ubx = []
-        if ik_solution is not None:
-            assert ik_solution.getNumRows() == num_times, (
-                f'ik_solution has {ik_solution.getNumRows()} rows but tracking data '
-                f'has {num_times} rows.')
-            B_np = np.array(B)
-            for coord_path in self.coordinates_map:
-                coord = osim.Coordinate.safeDownCast(self.model.getComponent(coord_path))
-                q_col = ik_solution.getDependentColumn(
-                    coord_path + '/value').to_numpy()
-                ctrl_pts, _, _, _ = np.linalg.lstsq(B_np, q_col, rcond=None)
-                x0 += ctrl_pts.tolist()
-                lbx += [coord.getRangeMin()] * num_knots
-                ubx += [coord.getRangeMax()] * num_knots
-        else:
-            for coord_path in self.coordinates_map:
-                coord = osim.Coordinate.safeDownCast(self.model.getComponent(coord_path))
-                x0 += [coord.getDefaultValue()] * num_knots
-                lbx += [coord.getRangeMin()] * num_knots
-                ubx += [coord.getRangeMax()] * num_knots
+        for coord_path in self.coordinates_map:
+            coord = osim.Coordinate.safeDownCast(self.model.getComponent(coord_path))
+            x0 += [coord.getDefaultValue()] * num_knots if not guess else \
+                  self._extract_coordinate_initial_guess(guess, B, coord_path)
+            lbx += [coord.getRangeMin()] * num_knots
+            ubx += [coord.getRangeMax()] * num_knots
 
         # Define the optimization problem.
         # --------------------------------
@@ -254,6 +258,7 @@ class SplineInverseKinematicsSolver(Solver):
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
 
         # Solve!
+        # ------
         sol = solver(x0=x0, lbx=lbx, ubx=ubx)
 
         # Reconstruct the optimal trajectory by evaluating the spline at the
@@ -271,4 +276,3 @@ class SplineInverseKinematicsSolver(Solver):
             statesTraj.append(self.state)
 
         return statesTraj.exportToTable(self.model)
-

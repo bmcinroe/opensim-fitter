@@ -86,7 +86,7 @@ class JacobianCallback(Callback, ABC):
 # Tracking Cost Callbacks
 # -----------------------
 class TrackingCostMixin:
-    def _init_tracking_cost(self, model, frame_paths, positions, quaternions, weights):
+    def _init_tracking_cost(self, model, frame_paths, positions, orientations, weights):
         # Frames.
         self.frame_paths = frame_paths
         self.frames = []
@@ -100,22 +100,23 @@ class TrackingCostMixin:
             self.stations.append(osim.Vec3(transform.p()))
             self.mobod_indexes.append(frame.getMobilizedBodyIndex())
 
-        self.quaternions = np.zeros((4, quaternions.size()))        # Convert the position and orientation data into a numpy arrays.
+         # Convert the position and orientation data into a numpy arrays.
+        self.orientations = np.zeros((4, orientations.size()))
         self.positions = np.zeros((3, positions.size()))
-        self.update_data(positions, quaternions)
+        self.update_data(positions, orientations)
 
         # Cost function weights.
         self.weights = weights
 
-    def update_data(self, positions, quaternions):
+    def update_data(self, positions, orientations):
         for i in range(positions.size()):
             self.positions[:, i] = positions[i].to_numpy()
-        for i in range(quaternions.size()):
-            quaternion = quaternions.getElt(0, i)
-            self.quaternions[0, i] = quaternion.get(0)
-            self.quaternions[1, i] = quaternion.get(1)
-            self.quaternions[2, i] = quaternion.get(2)
-            self.quaternions[3, i] = quaternion.get(3)
+        for i in range(orientations.size()):
+            quaternion = orientations.getElt(0, i)
+            self.orientations[0, i] = quaternion.get(0)
+            self.orientations[1, i] = quaternion.get(1)
+            self.orientations[2, i] = quaternion.get(2)
+            self.orientations[3, i] = quaternion.get(3)
 
     def _get_num_inputs(self):
         return len(self.coordinate_indexes)
@@ -146,7 +147,7 @@ class TrackingCostMixin:
 
             # Compute the quaternion distance.
             # See section 2 in docs/frame_error_jacobians.pdf for details.
-            error = 1 - np.square(np.dot(eps, self.quaternions[:, i]))
+            error = 1 - np.square(np.dot(eps, self.orientations[:, i]))
             orientation_errors.append(error)
 
         return position_errors, orientation_errors
@@ -166,16 +167,17 @@ class TrackingCostMixin:
 
 class TrackingCostCallback(TrackingCostMixin, Callback):
     def __init__(self, name, model, coordinate_indexes, frame_paths, positions,
-                 quaternions, weights, state=None, opts={}):
+                 orientations, weights, state=None, opts={}):
         Callback.__init__(self, name, model, coordinate_indexes, state=state, opts=opts)
-        self._init_tracking_cost(model, frame_paths, positions, quaternions, weights)
+        self._init_tracking_cost(model, frame_paths, positions, orientations, weights)
 
 
 class TrackingCostJacobianCallback(TrackingCostMixin, JacobianCallback):
     def __init__(self, name, model, coordinate_indexes, frame_paths, positions,
-                 quaternions, weights, state=None, opts={}):
-        JacobianCallback.__init__(self, name, model, coordinate_indexes, state=state, opts=opts)
-        self._init_tracking_cost(model, frame_paths, positions, quaternions, weights)
+                 orientations, weights, state=None, opts={}):
+        JacobianCallback.__init__(self, name, model, coordinate_indexes,
+                                  state=state, opts=opts)
+        self._init_tracking_cost(model, frame_paths, positions, orientations, weights)
 
     def _calc_quaternion_jacobian(self, eps):
         # Simbody -> /SimTKcommon/Mechanics/include/SimTKcommon/internal/Rotation.h#L712
@@ -247,11 +249,12 @@ class TrackingCostJacobianCallback(TrackingCostMixin, JacobianCallback):
         # position and orientation errors for each frame.
         # See section 6 in docs/frame_error_jacobians.pdf for details.
         J = np.zeros((self.state.getNQ()))
-        for i, frame in enumerate(self.frames):
-            J_i = self._calc_frame_error_jacobian(frame, self.stations[i],
-                                                 self.mobod_indexes[i],
-                                                 self.positions[:,i],
-                                                 self.quaternions[:,i])
+        for i in range(len(self.frames)):
+            J_i = self._calc_frame_error_jacobian(self.frames[i],
+                                                  self.stations[i],
+                                                  self.mobod_indexes[i],
+                                                  self.positions[:,i],
+                                                  self.orientations[:,i])
             J += J_i
 
         # Index out the dependent coordinates and return the Jacobian.
