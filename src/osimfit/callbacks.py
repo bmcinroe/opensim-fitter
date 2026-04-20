@@ -6,10 +6,10 @@ from abc import ABC, abstractmethod
 # Base Callback Classes
 # ---------------------
 class Callback(ca.Callback, ABC):
-    def __init__(self, name, model, coordinate_indexes, opts={}):
+    def __init__(self, name, model, coordinate_indexes, state=None, opts={}):
         ca.Callback.__init__(self)
         self.model = model
-        self.state = self.model.initSystem()
+        self.state = state if state is not None else self.model.getWorkingState()
         self.matter = self.model.getMatterSubsystem()
         self.coordinate_indexes = coordinate_indexes
         self.construct(name, opts)
@@ -100,19 +100,9 @@ class TrackingCostMixin:
             self.stations.append(osim.Vec3(transform.p()))
             self.mobod_indexes.append(frame.getMobilizedBodyIndex())
 
-        # Convert the position data to a numpy array.
+        self.quaternions = np.zeros((4, quaternions.size()))        # Convert the position and orientation data into a numpy arrays.
         self.positions = np.zeros((3, positions.size()))
-        for i in range(positions.size()):
-            self.positions[:, i] = positions[i].to_numpy()
-
-        # Convert the quaternion data to a numpy array.
-        self.quaternions = np.zeros((4, quaternions.size()))
-        for i in range(quaternions.size()):
-            quaternion = quaternions.getElt(0, i)
-            self.quaternions[0, i] = quaternion.get(0)
-            self.quaternions[1, i] = quaternion.get(1)
-            self.quaternions[2, i] = quaternion.get(2)
-            self.quaternions[3, i] = quaternion.get(3)
+        self.update_data(positions, quaternions)
 
         # Cost function weights.
         self.weights = weights
@@ -176,15 +166,15 @@ class TrackingCostMixin:
 
 class TrackingCostCallback(TrackingCostMixin, Callback):
     def __init__(self, name, model, coordinate_indexes, frame_paths, positions,
-                 quaternions, weights, opts={}):
-        Callback.__init__(self, name, model, coordinate_indexes, opts)
+                 quaternions, weights, state=None, opts={}):
+        Callback.__init__(self, name, model, coordinate_indexes, state=state, opts=opts)
         self._init_tracking_cost(model, frame_paths, positions, quaternions, weights)
 
 
 class TrackingCostJacobianCallback(TrackingCostMixin, JacobianCallback):
     def __init__(self, name, model, coordinate_indexes, frame_paths, positions,
-                 quaternions, weights, opts={}):
-        JacobianCallback.__init__(self, name, model, coordinate_indexes, opts)
+                 quaternions, weights, state=None, opts={}):
+        JacobianCallback.__init__(self, name, model, coordinate_indexes, state=state, opts=opts)
         self._init_tracking_cost(model, frame_paths, positions, quaternions, weights)
 
     def _calc_quaternion_jacobian(self, eps):

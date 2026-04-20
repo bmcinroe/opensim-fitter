@@ -4,7 +4,7 @@ import opensim as osim
 from osimfit.data_sources import TheiaFrameSource
 from osimfit.scaling import PositionDataScaler, FrameMeasurement, Axis, ScaleFactor, \
                             AnthropometricScaler, AnthropometricMeasurement
-from osimfit.solvers import InverseKinematicsSolver
+from osimfit.solvers import InverseKinematicsSolver, SplineInverseKinematicsSolver
 
 # STEP 1: POSITION-BASED SCALING
 # ------------------------------
@@ -128,22 +128,27 @@ orientations = c3d_source.get_orientations_table()
 TheiaFrameSource.remove_columns(orientations, columns_to_remove)
 TheiaFrameSource.update_column_labels(orientations, frame_map)
 
+weights = {'position': 2.0, 'orientation': 5.0, 'smoothness': 0.5}
 solver = InverseKinematicsSolver(anthro_scaled_model, positions, orientations,
-                                 convergence_tolerance=1e-4,
-                                 position_weight=2.0,
-                                 orientation_weight=5.0,
-                                 smoothness_weight=0.5)
-
-states = solver.solve()
+                                 convergence_tolerance=1e-4, weights=weights)
+ik_solution = solver.solve()
 sto = osim.STOFileAdapter()
-sto.write(states, 'jump_1_ik_solution.sto')
+sto.write(ik_solution, 'jump_1_ik_solution.sto')
 
-# modelProcessor = osim.ModelProcessor('jump_1_anthro_scaled.osim')
-# modelProcessor.append(osim.ModOpRemoveMuscles())
-# model = modelProcessor.process()
-# model.initSystem()
+weights = {'position': 2.0, 'orientation': 5.0}
+solver = SplineInverseKinematicsSolver(anthro_scaled_model, positions, orientations,
+                                        convergence_tolerance=1e-4, weights=weights,
+                                        knot_interval=0.06)
+spline_ik_solution  = solver.solve(ik_solution)
+sto.write(spline_ik_solution, 'jump_1_spline_ik_solution.sto')
 
-# states = osim.TimeSeriesTable('jump_1_ik_solution.sto')
-# states.addTableMetaDataString('inDegrees', 'no')
 
-# osim.VisualizerUtilities.showMotion(model, states)
+modelProcessor = osim.ModelProcessor('jump_1_anthro_scaled.osim')
+modelProcessor.append(osim.ModOpRemoveMuscles())
+model = modelProcessor.process()
+model.initSystem()
+
+states = osim.TimeSeriesTable('jump_1_spline_ik_solution.sto')
+states.addTableMetaDataString('inDegrees', 'no')
+
+osim.VisualizerUtilities.showMotion(model, states)
