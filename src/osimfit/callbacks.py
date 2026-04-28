@@ -278,8 +278,9 @@ class FrameTrackingCost(TrackingCost):
 # -----------------------
 class TrackingCostCallback(Callback):
     """
-    A CasADi callback that evaluates the sum of tracking costs for a set of model frames.
-    
+    A CasADi callback that evaluates the sum of tracking costs for a set of model
+    frames.
+
     Parameters
     ----------
     name: str
@@ -298,10 +299,10 @@ class TrackingCostCallback(Callback):
         self.tracking_costs: list[TrackingCost] = []
         self.weights = weights
 
-    def add_frame_tracking_cost(self, frame_path: str, position: osim.Vec3, 
+    def add_frame_tracking_cost(self, frame_path: str, position: osim.Vec3,
                                 orientation: osim.Quaternion):
         self.tracking_costs.append(
-                FrameTrackingCost(self.model, 
+                FrameTrackingCost(self.model,
                                   frame_path,
                                   position,
                                   orientation,

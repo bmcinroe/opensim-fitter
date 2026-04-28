@@ -73,7 +73,7 @@ class InverseKinematicsSolver(Solver):
 
         callback = TrackingCostCallback('tracking_cost', self.model, weights)
         for iframe, frame_path in enumerate(frame_paths):
-            callback.add_frame_tracking_cost(frame_path, 
+            callback.add_frame_tracking_cost(frame_path,
                                              positions.getElt(0, iframe),
                                              orientations.getElt(0, iframe))
 
@@ -110,7 +110,7 @@ class InverseKinematicsSolver(Solver):
 
         # Solve position-only optimization to create an inital guess for the full IK
         # problem.
-        print('Solving initial guess optimization...'
+        print('Solving initial guess optimization...')
         callback, solver = self._build_solver(
             frame_paths,
             self.positions.getRowAtIndex(0),
@@ -224,7 +224,7 @@ class SplineInverseKinematicsSolver(Solver):
 
         # Define the optimization variables, which are the spline control points for
         # each coordinate.
-        x = ca.MX.sym('x', num_knots, len(self.coordinate_indexes))
+        knots = ca.MX.sym('x', num_knots, len(self.coordinate_indexes))
         x0 = []
         lbx = []
         ubx = []
@@ -239,7 +239,7 @@ class SplineInverseKinematicsSolver(Solver):
         # --------------------------------
         # Map the control points to the full predicted trajectory via the spline basis
         # matrix.
-        q = B @ x
+        q = B @ knots
 
         # Compute the tracking cost at each time step via a callback.
         # Call initSystem() once and copy the state for each callback to avoid
@@ -255,16 +255,16 @@ class SplineInverseKinematicsSolver(Solver):
             positions_i = self.positions.getRowAtIndex(i)
             orientations_i = self.orientations.getRowAtIndex(i)
             for iframe, frame_path in enumerate(frame_paths):
-                callbacks[i].add_frame_tracking_cost(frame_path, 
+                callbacks[i].add_frame_tracking_cost(frame_path,
                                                      positions_i.getElt(0, iframe),
                                                      orientations_i.getElt(0, iframe))
             errors[i] = callbacks[i](q[i, :].T)
 
-        # Define the overall cost as the sum of squared tracking errors.
+        # Define the overall cost as the average tracking error across all time steps.
         f = ca.sum(errors) / num_times
 
         # Define the NLP and solver.
-        nlp = {'x': ca.vec(x), 'f': f}
+        nlp = {'x': ca.vec(knots), 'f': f}
         opts = {}
         opts['ipopt'] = self.get_ipopt_options(print_level=5)
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)

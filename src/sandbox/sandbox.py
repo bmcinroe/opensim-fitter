@@ -62,8 +62,6 @@ knots = np.concatenate([
     np.repeat(1.0, degree),
 ])
 
-import pdb; pdb.set_trace()
-
 # Build basis matrix B[i,j] = N_j(t_i) numerically.
 # ca.bspline does not support symbolic differentiation w.r.t. coefficients, so
 # we evaluate each basis function by passing a unit coefficient vector.
