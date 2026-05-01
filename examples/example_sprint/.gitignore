@@ -7,3 +7,5 @@
 /preaug
 *.csv
 *.png
+*.trc
+compare_literature_bflh.py
