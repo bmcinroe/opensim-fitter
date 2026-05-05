@@ -14,11 +14,6 @@ from osimfit.solvers import InverseKinematicsSolver, SplineBasedInverseKinematic
 # marker trajectories for the sprinting motion estimated using OpenCap's marker
 # augmenter, which uses an LSTM to predict marker trajectories from keypoints extracted
 # from smartphone videos via pose detection (e.g., HRNet).
-#
-# The marker trajectories are noisy, and this example shows how the spline-based IK
-# solver can be used to smooth kinematics while retaining position-level fidelity to
-# the marker data. We will show how this benefits downstream calculations, especially
-# those dependent on joint velocties (e.g., hamstring lengthening speeds).
 
 # Load data
 # ---------

@@ -1,4 +1,5 @@
 *.osim
 *.sto
 *.c3d
+*.png
 /Geometry

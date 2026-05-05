@@ -170,7 +170,10 @@ class InverseKinematicsSolver(Solver):
         for itime, time in enumerate(times):
             print(f'Solving time {itime+1} of {len(times)} (t={time:.3f} s)...')
 
-            callback, solver = self._build_solver(self.weights, itime)
+            weights = {'position': self.weights.get('position', 0.0),
+                       'orientation': self.weights.get('orientation', 0.0),
+                       'smoothness': self.weights.get('smoothness', 0.0)}
+            callback, solver = self._build_solver(weights, itime)
             sol = solver(x0=x0, lbx=lbx, ubx=ubx, p=x0)
 
             # Write solution into callback.state — avoids calling initSystem() again,
