@@ -1,0 +1,8 @@
+numpy
+setuptools
+ezc3d
+pyyaml
+casadi
+matplotlib
+pandas
+scipy
