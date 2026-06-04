@@ -8,12 +8,20 @@ from .data_sources import DataSource
 from .utilities import MultivariateNormal
 
 class Axis(Enum):
+    """
+    Cartesian axis identifier used to specify the direction of a scale factor or
+    measurement.
+    """
     XAxis = 0
     YAxis = 1
     ZAxis = 2
 
 
 class Measurement(ABC):
+    """
+    Abstract base class defining the interface for computing a scalar measurement from
+    an OpenSim model and its current state.
+    """
     def __init__(self):
         super().__init__()
 
@@ -23,6 +31,15 @@ class Measurement(ABC):
 
 
 class Scaler(ABC):
+    """
+    Abstract base class for model scalers. Subclasses implement a specific scaling
+    strategy and return the scaled OpenSim model from `scale`.
+
+    Parameters
+    ----------
+    model: osim.Model
+        The OpenSim model to be scaled.
+    """
     def __init__(self, model: osim.Model):
         super().__init__()
         self.model = model
@@ -37,6 +54,17 @@ class Scaler(ABC):
 ########################
 
 class FrameMeasurement(Measurement):
+    """
+    Computes the Euclidean distance between two named frames expressed in the model's
+    ground frame.
+
+    Parameters
+    ----------
+    frame1_path : str
+        Component path to the first frame in the model.
+    frame2_path : str
+        Component path to the second frame in the model.
+    """
     def __init__(self, frame1_path, frame2_path):
         super().__init__()
         self.frame1_path = frame1_path
@@ -55,6 +83,17 @@ class FrameMeasurement(Measurement):
 
 
 class MarkerMeasurement(Measurement):
+    """
+    Computes the Euclidean distance between two named markers expressed in the model's
+    ground frame.
+
+    Parameters
+    ----------
+    marker1_path : str
+        Component path to the first marker in the model.
+    marker2_path : str
+        Component path to the second marker in the model.
+    """
     def __init__(self, marker1_path, marker2_path):
         super().__init__()
         self.marker1_path = marker1_path
@@ -73,6 +112,21 @@ class MarkerMeasurement(Measurement):
 
 
 class ScaleFactor:
+    """
+    Computes a scale factor as the ratio of a data-derived distance measurement to the
+    corresponding model measurement, averaged over all frames in the position data.
+
+    Parameters
+    ----------
+    data_label1 : str
+        Column label for the first position in the data table.
+    data_label2 : str
+        Column label for the second position in the data table.
+    measurement : Measurement
+        Model measurement corresponding to the distance between the two data positions.
+    axis : Axis
+        Axis along which the scale factor is applied to the model segment.
+    """
     def __init__(self, data_label1: str, data_label2: str, measurement: Measurement,
                  axis: Axis):
         self.data_label1 = data_label1
@@ -101,6 +155,17 @@ class ScaleFactor:
 
 
 class PositionDataScaler(Scaler):
+    """
+    Scales a model by comparing distances between position data (e.g., marker
+    trajectories) to corresponding model measurements.
+
+    Parameters
+    ----------
+    model : osim.Model
+        OpenSim model to be scaled.
+    data_source : DataSource
+        Data source providing the position table used to compute data-side measurements.
+    """
     def __init__(self, model: osim.Model, data_source: DataSource):
         super().__init__(model)
         self.positions = data_source.get_positions_table()
@@ -168,11 +233,25 @@ class PositionDataScaler(Scaler):
         return scale
 
 
-########################
-# POSITION DATA SCALER #
-########################
+#########################
+# ANTHROPOMETRIC SCALER #
+#########################
 
 class AnthropometricMeasurement(ABC):
+    """
+    Computes the distance between two named stations in the model, in millimeters, for
+    comparison against entries in the ANSUR II anthropometric dataset.
+
+    Parameters
+    ----------
+    station1_path : str
+        Component path to the first station in the model.
+    station2_path : str
+        Component path to the second station in the model.
+    axis : Axis, optional
+        If provided, returns the signed distance along the specified axis rather than
+        the Euclidean magnitude.
+    """
     def __init__(self, station1_path: str, station2_path: str, axis: Axis = None):
         super().__init__()
         self.station1_path = station1_path
@@ -199,6 +278,20 @@ class AnthropometricMeasurement(ABC):
 
 
 class AnthropometricScaler(Scaler):
+    """
+    Scales a model using the ANSUR II anthropometric dataset. Model measurements are
+    compared against a multivariate normal distribution fit to the dataset, conditioned
+    on a subset of measurements, and the resulting mean values are used to compute
+    per-axis scale factors for each body segment.
+
+    Parameters
+    ----------
+    model : osim.Model
+        OpenSim model to be scaled.
+    sex : str, optional
+        Sex of the subject ('male' or 'female'). If not provided, the combined
+        male-and-female dataset is used.
+    """
     def __init__(self, model: osim.Model, sex: str = None):
         super().__init__(model)
         self.measurements: dict[str, AnthropometricMeasurement] = {}
