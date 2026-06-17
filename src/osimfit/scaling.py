@@ -556,7 +556,7 @@ class AnthropometricScaler(Scaler):
 
     def scale(self):
         # Load anthropometric measurements from the ANSUR II dataset.
-        df = pd.read_csv(self.anthropometrics_fpath)
+        df = pd.read_csv(self.anthropometrics_fpath, encoding_errors='replace')
         ansur_labels = list(self.measurements.keys())
         for label in ansur_labels:
             if label not in df.columns:
