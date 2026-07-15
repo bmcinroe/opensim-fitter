@@ -13,7 +13,7 @@ $DebugType = 'Release'
 $NumJobs = if ($env:OPENSIM_BUILD_JOBS) { $env:OPENSIM_BUILD_JOBS } else { 24 }
 $Moco = 'off'
 $Org = 'nickbianco'
-$Branch = 'dc7e1f0a18905fcd17cbbee9f923a70b4cb9de99'
+$Branch = 'eaf7a98b466ca0019316f32e44b73a37c060baf3'
 $Generator = 'Ninja'
 $PythonRootDir = $args[0]
 $WorkingDir = Join-Path $PWD 'opensim'
@@ -42,7 +42,7 @@ cmake $DepsSrc `
     '-DSUPERBUILD_ezc3d=off' `
     "-DOPENSIM_WITH_CASADI=$Moco" `
     '-DBUILD_PYTHON_WRAPPING=on' `
-    "-DPython3_ROOT_DIR=$PythonRootDir"
+    "-DPython3_EXECUTABLE=$PythonRootDir"
 cmake . -LAH
 cmake --build . --config $DebugType -j $NumJobs
 
@@ -62,6 +62,6 @@ cmake $CoreSrc `
     '-DOPENSIM_INSTALL_UNIX_FHS=off' `
     "-DOPENSIM_WITH_CASADI=$Moco" `
     '-DBUILD_PYTHON_WRAPPING=on' `
-    "-DPython3_ROOT_DIR=$PythonRootDir"
+    "-DPython3_EXECUTABLE=$PythonRootDir"
 cmake --build . --config $DebugType -j $NumJobs
 cmake --install .

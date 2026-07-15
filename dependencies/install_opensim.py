@@ -23,7 +23,7 @@ subprocess.run(cmd, check=True, cwd=cwd)
 # Install the OpenSim Python package in the current environment.
 package = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'opensim',
                        'opensim_core_install', 'sdk', 'Python', '.')
-subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+subprocess.check_call(["uv", "pip", "install", "--python", sys.executable, package])
 
 # On Windows, Python 3.8+ no longer resolves .pyd DLL dependencies via PATH;
 # only directories registered with os.add_dll_directory() are searched. The
