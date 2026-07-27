@@ -6,9 +6,8 @@ import opensim as osim
 from osimfit.data_sources import TheiaFrameSource
 from osimfit.scaling import PositionBasedScaler, FrameMeasurement, Axis, \
                             AnthropometricScaler, AnthropometricMeasurement
-from osimfit.solvers import (InverseKinematicsSolver,
-                             SplineBasedInverseKinematicsSolver,
-                             SplineTrackingSolution)
+from osimfit.solvers import (InverseKinematicsSolver, SplineBasedBilevelSolver,
+                             SplineBilevelSolution)
 
 # EXAMPLE JUMP
 # ------------
@@ -72,6 +71,11 @@ scale_map = {
 
 # Load the model and Theia frame data, and create a PositionBasedScaler object.
 model = osim.Model('unscaled_generic.osim')
+model.initSystem()
+
+# Save a clone of the unscaled model for the bilevel optimization below.
+unscaled_model = osim.Model(model)
+
 c3d_source = TheiaFrameSource('pose_0.c3d')
 position_scaler = PositionBasedScaler(model, c3d_source)
 
@@ -178,36 +182,82 @@ theia_frame_source = TheiaFrameSource('pose_0.c3d',
 
 # Run the frame-by-frame IK solver.
 solver = InverseKinematicsSolver(anthro_scaled_model,
-                                 convergence_tolerance=1e-4,
-                                 position_weight=2.0,
-                                 orientation_weight=5.0)
+                                 convergence_tolerance=1e-3,
+                                 position_weight=1.0,
+                                 orientation_weight=2.0)
 solver.add_theia_frame_reference_data(theia_frame_source)
 ik_solution = solver.solve()
 sto = osim.STOFileAdapter()
 sto.write(ik_solution.states_table, 'jump_1_ik_solution.sto')
 
-# Spline-based inverse kinematics
-# -------------------------------
-# Run the spline IK solver, initialized with the frame-by-frame solution.
-solver = SplineBasedInverseKinematicsSolver(anthro_scaled_model,
-                                            convergence_tolerance=1e-4,
-                                            position_weight=2.0,
-                                            orientation_weight=5.0,
-                                            knot_interval=0.10)
+# Spline-based bilevel optimization
+# ----------------------------------
+# Construct a SplineBasedBilevelSolver to solve for the model kinematics and body
+# scales that best match the Theia frame data, initialized from the unscaled model.
+solver = SplineBasedBilevelSolver(unscaled_model,
+                                  convergence_tolerance=1e-3,
+                                  knot_interval=0.05,
+                                  position_weight=1.0,
+                                  orientation_weight=2.0,
+                                  body_scale_regularization_weight=1e-1)
 solver.add_theia_frame_reference_data(theia_frame_source)
-spline_ik_solution = solver.solve(SplineTrackingSolution(
-    states_table=osim.TimeSeriesTable('jump_1_ik_solution.sto')))
+
+# Add body scales for bodies in the model. Apply the same scales to groups of bodies,
+# including those that should share left-right symmetry. The pelvis is excluded here;
+# the scale factors from the anthropometric scaling step seems to provide a more
+# realistic scaling.
+bounds = [0.5, 1.5]
+solver.add_body_scale('/bodyset/torso', bounds[0], bounds[1])
+solver.add_body_scale(['/bodyset/humerus_r', '/bodyset/humerus_l'],
+                      bounds[0], bounds[1])
+solver.add_body_scale(['/bodyset/radius_r', '/bodyset/radius_l',
+                       '/bodyset/ulna_r', '/bodyset/ulna_l',
+                       '/bodyset/hand_r', '/bodyset/hand_l'],
+                      bounds[0], bounds[1])
+solver.add_body_scale(['/bodyset/femur_r', '/bodyset/femur_l',
+                       '/bodyset/patella_r', '/bodyset/patella_l'],
+                      bounds[0], bounds[1])
+solver.add_body_scale(['/bodyset/tibia_r', '/bodyset/tibia_l'], bounds[0], bounds[1])
+solver.add_body_scale(['/bodyset/calcn_r', '/bodyset/calcn_l',
+                       '/bodyset/toes_r', '/bodyset/toes_l'],
+                      bounds[0], bounds[1])
+
+# Combine the per-body XYZ body scales from the two scaling stages above by
+# element-wise multiplication.
+def per_body_factors(scaleset, body_name):
+    factors = scaleset.get(body_name).getScaleFactors()
+    return np.array([factors[0], factors[1], factors[2]])
+
+body_scale_guess = np.zeros((len(solver.body_scale_groups), 3))
+for igroup, group in enumerate(solver.body_scale_groups):
+    per_body = []
+    for body_path in group.body_paths:
+        body_name = body_path.rsplit('/', 1)[-1]
+        per_body.append(
+            per_body_factors(position_scaler.scaleset, body_name)
+            * per_body_factors(anthropometric_scaler.scaleset, body_name))
+    body_scale_guess[igroup, :] = np.mean(per_body, axis=0)
+
+# Create an initial guess based on the kinematics from the frame-by-frame inverse
+# kinematics solution and the combined body scales.
+guess = SplineBilevelSolution(
+    states_table=osim.TimeSeriesTable('jump_1_ik_solution.sto'),
+    body_scale_groups=solver.body_scale_groups,
+    body_scales=body_scale_guess)
+bilevel_solution = solver.solve(guess)
 sto = osim.STOFileAdapter()
-sto.write(spline_ik_solution.states_table, 'jump_1_spline_ik_solution.sto')
+sto.write(bilevel_solution.states_table, 'jump_1_bilevel_solution.sto')
+bilevel_scaled_model = solver.update_model(unscaled_model, bilevel_solution)
+bilevel_scaled_model.printToXML('jump_1_bilevel_scaled.osim')
 
 # Visualization
 # -------------
-modelProcessor = osim.ModelProcessor('jump_1_anthro_scaled.osim')
+modelProcessor = osim.ModelProcessor('jump_1_bilevel_scaled.osim')
 modelProcessor.append(osim.ModOpRemoveMuscles())
 model = modelProcessor.process()
 model.initSystem()
 
-states = osim.TimeSeriesTable('jump_1_spline_ik_solution.sto')
+states = osim.TimeSeriesTable('jump_1_bilevel_solution.sto')
 states.addTableMetaDataString('inDegrees', 'no')
 osim.VisualizerUtilities.showMotion(model, states)
 
@@ -228,14 +278,14 @@ ax.plot(solution.getIndependentColumn(),
 ax.set_ylabel(ylabel)
 ax.grid(True, which='both', ls='--', lw=0.5, alpha=0.75)
 
-# Plot the spline-based IK solutions.
+# Plot the bilevel optimization solution.
 solution = osim.TimeSeriesTable(
-    f'jump_1_spline_ik_solution.sto')
-t_spline = np.array(solution.getIndependentColumn())
-y_spline = np.rad2deg(solution.getDependentColumn(coordinate).to_numpy())
-ax.plot(t_spline, y_spline,
+    f'jump_1_bilevel_solution.sto')
+t_bilevel = np.array(solution.getIndependentColumn())
+y_bilevel = np.rad2deg(solution.getDependentColumn(coordinate).to_numpy())
+ax.plot(t_bilevel, y_bilevel,
         color='darkorange', lw=3.5,
-        label=f'Spline-based IK')
+        label=f'Bilevel optimization')
 ax.set_ylim(-5, 85)
 ax.set_xlabel('time (s)')
 ax.legend(loc='upper left', fontsize=11)

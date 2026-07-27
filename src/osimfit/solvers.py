@@ -796,8 +796,13 @@ class BilevelSolver(TrackingSolver):
                                        translation_scale_groups=tscale_groups)
 
         for data in self.theia_frame_data:
-            raise NotImplementedError('TheiaFrameSource is not currently supported '
-                                      'with body scale optimization.')
+            for iframe, frame_path in enumerate(data.labels):
+                callback.add_frame_bilevel_cost(
+                    frame_path,
+                    data.positions.getRowAtIndex(itime).getElt(0, iframe),
+                    data.orientations.getRowAtIndex(itime).getElt(0, iframe),
+                    position_weight=position_weight,
+                    orientation_weight=orientation_weight)
 
         for data in self.marker_data:
             for iframe, marker_path in enumerate(data.labels):

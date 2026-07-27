@@ -243,6 +243,19 @@ def test_bilevel_cost_function_add_marker_registers_in_marker_cost():
     assert cost.marker_cost.mobod_indexes.size() == 1
 
 
+def test_bilevel_cost_function_add_frame_registers_in_frame_cost():
+    model = create_sliding_mass_model()
+    model.initSystem()
+    cost = BilevelCostFunction(
+        'cost', ModelCache(model),
+        body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])])
+    cost.add_frame_bilevel_cost(
+        '/bodyset/body', osim.Vec3(0), osim.Quaternion())
+    assert cost.frame_cost.mobod_indexes.size() == 1
+    # marker_cost should be empty.
+    assert len(cost.marker_cost.markers) == 0
+
+
 # A helper function for retrieving the outboard frame, `X_BM` of a mobilzed body.
 def getX_BM(model, idx, state):
     return model.getJointSet().get(idx).getOutboardFrame(state).p().to_numpy()
@@ -350,6 +363,48 @@ def test_bilevel_cost_function_scaling_changes_marker_world_position():
     assert float(cost(q, s_scaled, ca.DM.zeros(0, 1))) == pytest.approx(0.64, abs=1e-9)
 
 
+def test_bilevel_cost_function_frame_at_reference_yields_zero():
+    """
+    A frame tracked at its own world position and orientation (the body frame
+    at q=0 sits at the origin with identity orientation) yields zero error.
+    """
+    model = create_sliding_mass_model()
+    model.initSystem()
+    cost = BilevelCostFunction(
+        'cost', ModelCache(model),
+        body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])])
+    cost.add_frame_bilevel_cost('/bodyset/body', osim.Vec3(0), osim.Quaternion())
+    q = ca.DM.zeros(len(cost.mc.q_indexes))
+    s = ca.DM([1.0, 1.0, 1.0])
+    assert float(cost(q, s, ca.DM.zeros(0, 1))) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_bilevel_cost_function_scaling_changes_frame_world_position():
+    """
+    With a non-zero outboard offset, scaling the body X by 2.0 shifts the body
+    frame in Ground. For a SliderJoint whose X_BM = Tx(offset_x), body B's
+    origin in Ground at q=0 is -offset_x * sx. Tracking that frame against a
+    reference at the world origin with position_weight w gives an error of
+    w * (offset_x * sx)^2 (the orientation stays identity, so it contributes
+    nothing).
+    """
+    model = create_sliding_mass_model(offset_x=0.4)
+    model.initSystem()
+    cost = BilevelCostFunction(
+        'cost', ModelCache(model),
+        body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])])
+    cost.add_frame_bilevel_cost(
+        '/bodyset/body', osim.Vec3(0), osim.Quaternion(), position_weight=2.0)
+
+    q = ca.DM.zeros(len(cost.mc.q_indexes))
+    s_unit = ca.DM([1.0, 1.0, 1.0])
+    s_scaled = ca.DM([2.0, 1.0, 1.0])
+    # At s_unit: origin = -0.4. Error = 2 * (-0.4)^2 = 0.32.
+    assert float(cost(q, s_unit, ca.DM.zeros(0, 1))) == pytest.approx(0.32, abs=1e-9)
+    # At s_scaled X=2: origin = -0.8. Error = 2 * (-0.8)^2 = 1.28.
+    assert float(cost(q, s_scaled, ca.DM.zeros(0, 1))) == pytest.approx(1.28, abs=1e-9)
+
+
 # Test BilevelCostFunction error Jacobian calcluations.
 
 def test_bilevel_cost_function_jacobians_sliding_mass():
@@ -368,6 +423,9 @@ def test_bilevel_cost_function_jacobians_sliding_mass():
             '/markerset/m0', osim.Vec3(0.3, 0, 0), weight=2.0)
         cost.add_marker_bilevel_cost(
             '/markerset/m1', osim.Vec3(0.7, 0, 0), weight=1.5)
+        cost.add_frame_bilevel_cost(
+            '/bodyset/body', osim.Vec3(0.5, 0, 0), osim.Quaternion(),
+            position_weight=1.5, orientation_weight=1.0)
 
     q = ca.SX.sym('q', len(cost_jac.mc.q_indexes))
     s = ca.SX.sym('s', 3)
@@ -407,6 +465,10 @@ def test_bilevel_cost_function_jacobians_full_body():
             '/markerset/R.Shoulder', osim.Vec3(0.3, 0, 0), weight=2.0)
         cost.add_marker_bilevel_cost(
             '/markerset/L.ASIS', osim.Vec3(0.7, 0, 0), weight=1.5)
+        cost.add_frame_bilevel_cost(
+            '/bodyset/pelvis', osim.Vec3(0.3, 0.1, -0.2),
+            osim.Quaternion(0.9, 0.1, 0.2, 0.3),
+            position_weight=2.0, orientation_weight=1.5)
 
     q = ca.SX.sym('q', len(cost_jac.mc.q_indexes))
     s = ca.SX.sym('s', 3*bodyset.getSize())
@@ -445,6 +507,10 @@ def test_bilevel_cost_function_custom_joint_translation_scale_jacobian_matches_f
     for cost in (cost_jac, cost_fd):
         cost.add_marker_bilevel_cost(
             '/markerset/m0', osim.Vec3(0.3, 0, 0), weight=2.0)
+        cost.add_frame_bilevel_cost(
+            '/bodyset/body', osim.Vec3(0.3, 0, 0),
+            osim.Quaternion(0.9, 0.0, 0.4, 0.0),
+            position_weight=2.0, orientation_weight=1.0)
 
     nq = len(cost_jac.mc.q_indexes)
     q = ca.SX.sym('q', nq)
@@ -500,6 +566,12 @@ def test_bilevel_cost_function_grouped_jacobian_sums_solo_and_matches_fd():
             '/markerset/m0', osim.Vec3(0.4, 0, 0), weight=2.0)
         cost.add_marker_bilevel_cost(
             '/markerset/m1', osim.Vec3(0.7, 0, 0), weight=1.5)
+        cost.add_frame_bilevel_cost(
+            '/bodyset/body_0', osim.Vec3(0.2, 0, 0), osim.Quaternion(),
+            position_weight=1.0)
+        cost.add_frame_bilevel_cost(
+            '/bodyset/body_1', osim.Vec3(0.5, 0, 0), osim.Quaternion(),
+            position_weight=1.2)
 
     nq = len(cost_shared.mc.q_indexes)
     q = ca.SX.sym('q', nq)
