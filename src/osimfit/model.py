@@ -34,28 +34,6 @@ class BodyScaleGroup:
     outboard_joints: list[osim.Joint] = field(default_factory=list, compare=False)
 
 
-@dataclass
-class TranslationScaleGroup:
-    """
-    A group of CustomJoints (backed by `SimTK::MobilizedBody::FunctionBased`) sharing
-    one set of XYZ translation-scale factors. Translation scales multiply the three
-    translation-output functions of the FunctionBased mobilizer (entries 3..5 of the
-    spatial transform) before they are combined into the mobilizer translation
-    `p_FM`.
-
-    Attributes
-    ----------
-    joint_paths: list[str]
-        Absolute model paths to the CustomJoints in this group.
-    mobod_indexes: list[int]
-        MobilizedBodyIndex values of the FunctionBased mobilizers backing the joints,
-        paired with `joint_paths`.
-    """
-    joint_paths: list[str]
-    mobod_indexes: list[int]
-    custom_joints: list[osim.CustomJoint] = field(default_factory=list, compare=False)
-
-
 #########
 # MODEL #
 #########
@@ -95,9 +73,6 @@ class ModelCache:
         Inverse of ``parent_of``: ``children_of[k]`` is the list of mobod
         indexes whose parent is ``k``. Every mobod (including Ground at 0)
         has an entry, possibly empty.
-    translation_scale_candidates: list[str]
-        Auto-detected absolute paths of CustomJoints whose translation
-        TransformAxes carry a non-trivial function.
     """
     def __init__(self, model: str | osim.Model):
         modelProcessor = osim.ModelProcessor(model)
@@ -172,205 +147,6 @@ class ModelCache:
 
         return q_map
 
-    @staticmethod
-    def _translation_axes_are_axis_aligned(st: osim.SpatialTransform,
-                                           tol: float = 1e-9) -> bool:
-        """
-        Return true if each `TransformAxis` of the provided `SpatialTransform`, when
-        normalized, are the Cartesian basis vectors [1,0,0], [0,1,0], [0,0,1] in
-        some order (up to sign).
-
-        Parameters
-        ----------
-        st: osim.SpatialTransform
-            The SpatialTransform whose translation axes (entries 3..5) are checked.
-        tol: float, optional
-            Absolute tolerance for the basis-vector comparison. Default 1e-9.
-        """
-        basis_seen = set()
-        for j in range(3, 6):
-            ax = osim.Vec3(0)
-            st.getTransformAxis(j).getAxis(ax)
-            v = np.abs([ax.get(0), ax.get(1), ax.get(2)])
-            norm = np.linalg.norm(v)
-            if norm == 0.0:
-                return False
-            v = v / norm
-            k = int(np.argmax(v))
-            if not np.allclose(v, np.eye(3)[k], atol=tol):
-                return False
-            basis_seen.add(k)
-        return len(basis_seen) == 3
-
-    @staticmethod
-    def _validate_custom_joint_can_scale(cj: osim.CustomJoint) -> None:
-        """
-        Raise `ValueError` if `cj` cannot be part of a translation scale. A CustomJoint
-        is scalable when its translation TransformAxes are axis-aligned (see
-        `_translation_axes_are_axis_aligned`) and at least one carries a non-trivial
-        function that `SpatialTransform::scale` would promote to a `MultiplierFunction`.
-
-        A translation axis function is non-trivial when it is present (e.g.,
-        `axis.hasFunction()` is True), is not a pure prismatic identity (e.g.,
-        `osim.LinearFunction(1, 0)`), and is not a zero constant (e.g.,
-        `osim.Constant(0)`).
-
-        Raises
-        ------
-        ValueError
-            If the translation axes are not axis-aligned, or no translation axis
-            carries a non-trivial function to scale.
-        """
-        path = cj.getAbsolutePathString()
-        st = cj.getSpatialTransform()
-
-        # The translation axes must be axis-aligned; otherwise
-        # SpatialTransform::scale projects the scale Vec3 onto a non-basis axis
-        # and produces a weighted average.
-        if not ModelCache._translation_axes_are_axis_aligned(st):
-            raise ValueError(
-                f'CustomJoint {path} cannot be part of a translation scale: its '
-                f'translation axes are not axis-aligned.')
-
-        # At least one translation axis must carry a non-trivial function.
-        for j in range(3, 6):
-            axis = st.getTransformAxis(j)
-
-            # 1. Is the function present?
-            if not axis.hasFunction():
-                continue
-
-            # 2. Is the function not a pure prismatic identity?
-            f = axis.getFunction()
-            lf = osim.LinearFunction.safeDownCast(f)
-            if lf is not None:
-                c = lf.getCoefficients()
-                if c.get(0) == 1.0 and c.get(1) == 0.0:
-                    continue
-
-            # 3. If constant, is the function non-zero?
-            cf = osim.Constant.safeDownCast(f)
-            if cf is not None and cf.getValue() == 0.0:
-                continue
-
-            return
-
-        raise ValueError(
-            f'CustomJoint {path} cannot be part of a translation scale: no '
-            f'translation axis carries a non-trivial function to scale.')
-
-    def create_translation_scale_group(
-                self, joint_paths) -> TranslationScaleGroup:
-        """
-        Validate that each path in `joint_paths` refers to a CustomJoint that can
-        be part of a translation scale, and return a
-        :py:class:`TranslationScaleGroup` pairing the joint paths with their
-        FunctionBased mobod indexes.
-
-        Parameters
-        ----------
-        joint_paths: str or list[str]
-            One or more absolute paths to CustomJoints sharing one Vec3
-            translation scale.
-
-        Raises
-        ------
-        ValueError
-            If `joint_paths` is empty, any path does not resolve to a CustomJoint
-            in this model, or any CustomJoint cannot be part of a translation
-            scale (see :py:meth:`_validate_custom_joint_can_scale`).
-        """
-        if isinstance(joint_paths, str):
-            joint_paths = [joint_paths]
-        if not joint_paths:
-            raise ValueError(
-                'joint_paths must be a non-empty string or list of strings.')
-
-        mobod_indexes: list[int] = []
-        for path in joint_paths:
-            joint = osim.CustomJoint.safeDownCast(self.model.getComponent(path))
-            if joint is None:
-                raise ValueError(f'Component at {path} is not a CustomJoint.')
-            self._validate_custom_joint_can_scale(joint)
-            mobod_indexes.append(joint.getChildFrame().getMobilizedBodyIndex())
-
-        return TranslationScaleGroup(list(joint_paths), mobod_indexes, custom_joints=[])
-
-    @staticmethod
-    def get_translation_scales(model: osim.Model) -> dict[str, np.ndarray]:
-        """
-        Return a dictionary mapping joint paths to per-axis translation scales, each
-        currently applied to a CustomJoint as a length-3 array.
-
-        Parameters
-        ----------
-        model: osim.Model
-            The model to read from.
-
-        Returns
-        -------
-        dict[str, np.ndarray]
-            A dictionary mapping joint paths to current [sx, sy, sz] translation scales.
-        """
-        scales: dict[str, np.ndarray] = {}
-        jointset = model.getJointSet()
-        for ijoint in range(jointset.getSize()):
-            joint = jointset.get(ijoint)
-            joint_path = joint.getAbsolutePathString()
-            cj = osim.CustomJoint.safeDownCast(model.getComponent(joint_path))
-            if cj is None:
-                continue
-
-            st = cj.getSpatialTransform()
-            scales[joint_path] = np.ones(3)
-            for i in range(3):
-                axis = st.getTransformAxis(3 + i)
-                if not axis.hasFunction():
-                    continue
-                mf = osim.MultiplierFunction.safeDownCast(axis.getFunction())
-                if mf is not None:
-                    scales[joint_path][i] = mf.getScale()
-
-        return scales
-
-    @staticmethod
-    def apply_translation_scales(model: osim.Model,
-                                 scales: dict) -> None:
-        """
-        For each `(joint_path, Vec3)` entry in `scales`, scale the
-        translation TransformAxis functions of that CustomJoint by delegating
-        to OpenSim's `SpatialTransform::scale`.
-
-        Parameters
-        ----------
-        model: osim.Model
-            The model to mutate.
-        scales: dict[str, np.ndarray | osim.Vec3]
-            Mapping from CustomJoint absolute path to a length-3 Vec3-like
-            translation-scale value.
-        """
-        for joint_path, tscale in scales.items():
-            cj = osim.CustomJoint.safeDownCast(model.getComponent(joint_path))
-            if cj is None:
-                raise ValueError(f'Component at {joint_path} is not a CustomJoint.')
-            st = cj.upd_SpatialTransform()
-
-            # Undo any scaling left on the translation functions by a prior
-            # Model::scale().
-            for j in range(3, 6):
-                axis = st.updTransformAxis(j)
-                if not axis.hasFunction():
-                    continue
-                mf = osim.MultiplierFunction.safeDownCast(axis.updFunction())
-                if mf is not None:
-                    mf.setScale(1.0)
-
-            # Apply the desired translation scale.
-            tscale_np = np.asarray(tscale, dtype=float)
-            st.scale(osim.Vec3(float(tscale_np[0]), float(tscale_np[1]),
-                               float(tscale_np[2])))
-
-
     def get_joint_for_mobilized_body_index(self, mobod_index: int) -> osim.Joint:
         """
         Return a `Joint` whose child body is associated with provided `MobilizedBody`
@@ -437,8 +213,82 @@ class ModelCache:
                     float(p_PF[0]), float(p_PF[1]), float(p_PF[2])))
                 joint.setInboardFrame(state, X_PF)
 
+    @staticmethod
+    def get_custom_joint_translation_scales(model: osim.Model) -> dict[str, np.ndarray]:
+        """
+        Return a dictionary mapping joint paths to per-axis translation scales, each
+        currently applied to a CustomJoint as a length-3 array.
+
+        Parameters
+        ----------
+        model: osim.Model
+            The model to read from.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            A dictionary mapping joint paths to current [sx, sy, sz] translation scales.
+        """
+        scales: dict[str, np.ndarray] = {}
+        jointset = model.getJointSet()
+        for ijoint in range(jointset.getSize()):
+            joint = jointset.get(ijoint)
+            joint_path = joint.getAbsolutePathString()
+            cj = osim.CustomJoint.safeDownCast(model.getComponent(joint_path))
+            if cj is None:
+                continue
+
+            st = cj.getSpatialTransform()
+            scales[joint_path] = np.ones(3)
+            for i in range(3):
+                axis = st.getTransformAxis(3 + i)
+                if not axis.hasFunction():
+                    continue
+                mf = osim.MultiplierFunction.safeDownCast(axis.getFunction())
+                if mf is not None:
+                    scales[joint_path][i] = mf.getScale()
+
+        return scales
+
+    @staticmethod
+    def apply_custom_joint_translation_scales(model: osim.Model, scales: dict) -> None:
+        """
+        For each `(joint_path, Vec3)` entry in `scales`, scale the
+        translation TransformAxis functions of that CustomJoint by delegating
+        to OpenSim's `SpatialTransform::scale`.
+
+        Parameters
+        ----------
+        model: osim.Model
+            The model to mutate.
+        scales: dict[str, np.ndarray | osim.Vec3]
+            Mapping from CustomJoint absolute path to a length-3 Vec3-like
+            translation-scale value.
+        """
+        for joint_path, tscale in scales.items():
+            cj = osim.CustomJoint.safeDownCast(model.getComponent(joint_path))
+            if cj is None:
+                raise ValueError(f'Component at {joint_path} is not a CustomJoint.')
+            st = cj.upd_SpatialTransform()
+
+            # Undo any scaling left on the translation functions by a prior
+            # Model::scale().
+            for j in range(3, 6):
+                axis = st.updTransformAxis(j)
+                if not axis.hasFunction():
+                    continue
+                mf = osim.MultiplierFunction.safeDownCast(axis.updFunction())
+                if mf is not None:
+                    mf.setScale(1.0)
+
+            # Apply the desired translation scale.
+            tscale_np = np.asarray(tscale, dtype=float)
+            st.scale(osim.Vec3(float(tscale_np[0]), float(tscale_np[1]),
+                               float(tscale_np[2])))
+
     def calc_position_jacobian_wrt_body_scales(self, state: osim.State,
-                dp_GB: osim.VectorVec3, body_scale_groups: list[BodyScaleGroup]) -> np.ndarray:
+                dp_GB: osim.VectorVec3,
+                body_scale_groups: list[BodyScaleGroup]) -> np.ndarray:
         """
         Return the position-error Jacobian with respect to body scales given a
         `State` object with scaled inboard and outboard applied and a vector `dp_GB`
