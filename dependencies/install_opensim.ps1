@@ -42,7 +42,7 @@ cmake $DepsSrc `
     '-DSUPERBUILD_ezc3d=off' `
     "-DOPENSIM_WITH_CASADI=$Moco" `
     '-DBUILD_PYTHON_WRAPPING=on' `
-    "-DPython3_ROOT_DIR=$PythonRootDir"
+    "-DPython3_EXECUTABLE=$PythonRootDir"
 cmake . -LAH
 cmake --build . --config $DebugType -j $NumJobs
 
@@ -62,6 +62,6 @@ cmake $CoreSrc `
     '-DOPENSIM_INSTALL_UNIX_FHS=off' `
     "-DOPENSIM_WITH_CASADI=$Moco" `
     '-DBUILD_PYTHON_WRAPPING=on' `
-    "-DPython3_ROOT_DIR=$PythonRootDir"
+    "-DPython3_EXECUTABLE=$PythonRootDir"
 cmake --build . --config $DebugType -j $NumJobs
 cmake --install .
