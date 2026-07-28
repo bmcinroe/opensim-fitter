@@ -8,6 +8,8 @@ from osimfit.scaling import PositionBasedScaler, FrameMeasurement, Axis, \
                             AnthropometricScaler, AnthropometricMeasurement
 from osimfit.solvers import (InverseKinematicsSolver, SplineBasedBilevelSolver,
                              SplineBilevelSolution)
+from osimfit.model import BodyScale
+from osimfit.bounds import Bounds
 
 # EXAMPLE JUMP
 # ------------
@@ -197,8 +199,8 @@ sto.write(ik_solution.states_table, 'jump_1_ik_solution.sto')
 solver = SplineBasedBilevelSolver(unscaled_model,
                                   convergence_tolerance=1e-3,
                                   knot_interval=0.05,
-                                  position_weight=1.0,
-                                  orientation_weight=2.0,
+                                  position_weight=2.0,
+                                  orientation_weight=5.0,
                                   body_scale_regularization_weight=1e-1)
 solver.add_theia_frame_reference_data(theia_frame_source)
 
@@ -206,21 +208,22 @@ solver.add_theia_frame_reference_data(theia_frame_source)
 # including those that should share left-right symmetry. The pelvis is excluded here;
 # the scale factors from the anthropometric scaling step seems to provide a more
 # realistic scaling.
-bounds = [0.5, 1.5]
-solver.add_body_scale('/bodyset/torso', bounds[0], bounds[1])
-solver.add_body_scale(['/bodyset/humerus_r', '/bodyset/humerus_l'],
-                      bounds[0], bounds[1])
-solver.add_body_scale(['/bodyset/radius_r', '/bodyset/radius_l',
-                       '/bodyset/ulna_r', '/bodyset/ulna_l',
-                       '/bodyset/hand_r', '/bodyset/hand_l'],
-                      bounds[0], bounds[1])
-solver.add_body_scale(['/bodyset/femur_r', '/bodyset/femur_l',
-                       '/bodyset/patella_r', '/bodyset/patella_l'],
-                      bounds[0], bounds[1])
-solver.add_body_scale(['/bodyset/tibia_r', '/bodyset/tibia_l'], bounds[0], bounds[1])
-solver.add_body_scale(['/bodyset/calcn_r', '/bodyset/calcn_l',
-                       '/bodyset/toes_r', '/bodyset/toes_l'],
-                      bounds[0], bounds[1])
+bounds = Bounds(0.5, 1.5)
+solver.add_parameter(BodyScale('/bodyset/torso', bounds, np.ones(3)))
+solver.add_parameter(BodyScale(['/bodyset/humerus_r', '/bodyset/humerus_l'],
+                               bounds, np.ones(3)))
+solver.add_parameter(BodyScale(['/bodyset/radius_r', '/bodyset/radius_l',
+                                '/bodyset/ulna_r', '/bodyset/ulna_l',
+                                '/bodyset/hand_r', '/bodyset/hand_l'],
+                               bounds, np.ones(3)))
+solver.add_parameter(BodyScale(['/bodyset/femur_r', '/bodyset/femur_l',
+                                '/bodyset/patella_r', '/bodyset/patella_l'],
+                               bounds, np.ones(3)))
+solver.add_parameter(BodyScale(['/bodyset/tibia_r', '/bodyset/tibia_l'],
+                               bounds, np.ones(3)))
+solver.add_parameter(BodyScale(['/bodyset/calcn_r', '/bodyset/calcn_l',
+                                '/bodyset/toes_r', '/bodyset/toes_l'],
+                               bounds, np.ones(3)))
 
 # Combine the per-body XYZ body scales from the two scaling stages above by
 # element-wise multiplication.
@@ -228,22 +231,22 @@ def per_body_factors(scaleset, body_name):
     factors = scaleset.get(body_name).getScaleFactors()
     return np.array([factors[0], factors[1], factors[2]])
 
-body_scale_guess = np.zeros((len(solver.body_scale_groups), 3))
-for igroup, group in enumerate(solver.body_scale_groups):
+parameters_guess = [p.with_value(p.value) for p in solver.parameters]
+body_scales = [p for p in parameters_guess if isinstance(p, BodyScale)]
+for scale in body_scales:
     per_body = []
-    for body_path in group.body_paths:
+    for body_path in scale.paths:
         body_name = body_path.rsplit('/', 1)[-1]
         per_body.append(
             per_body_factors(position_scaler.scaleset, body_name)
             * per_body_factors(anthropometric_scaler.scaleset, body_name))
-    body_scale_guess[igroup, :] = np.mean(per_body, axis=0)
+    scale.value = np.mean(per_body, axis=0)
 
 # Create an initial guess based on the kinematics from the frame-by-frame inverse
-# kinematics solution and the combined body scales.
+# kinematics solution and the combined body scales set above.
 guess = SplineBilevelSolution(
     states_table=osim.TimeSeriesTable('jump_1_ik_solution.sto'),
-    body_scale_groups=solver.body_scale_groups,
-    body_scales=body_scale_guess)
+    parameters=parameters_guess)
 bilevel_solution = solver.solve(guess)
 sto = osim.STOFileAdapter()
 sto.write(bilevel_solution.states_table, 'jump_1_bilevel_solution.sto')

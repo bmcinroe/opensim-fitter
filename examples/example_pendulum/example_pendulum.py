@@ -1,7 +1,10 @@
 import os
+import numpy as np
 import opensim as osim
 from osimfit.data_sources import MarkerSource
 from osimfit.solvers import SplineBasedBilevelSolver
+from osimfit.model import BodyScale
+from osimfit.bounds import Bounds
 
 # EXAMPLE PENDULUM
 # ----------------
@@ -105,8 +108,8 @@ solver = SplineBasedBilevelSolver(model,
 solver.add_marker_reference_data(marker_source)
 # Add body scales for the two bodies including lower and upper bounds for the
 # optimization variables.
-solver.add_body_scale('/bodyset/b0', 0.5, 2.0)
-solver.add_body_scale('/bodyset/b1', 0.5, 2.0)
+solver.add_parameter(BodyScale('/bodyset/b0', Bounds(0.5, 2.0), np.ones(3)))
+solver.add_parameter(BodyScale('/bodyset/b1', Bounds(0.5, 2.0), np.ones(3)))
 
 # Solve!
 solution = solver.solve()
@@ -118,8 +121,9 @@ sto.write(solution.states_table, 'double_pendulum_ik_solution.sto')
 # Print the optimized body lengths.
 print("\nOptimized body lengths")
 print("----------------------")
-print(f' b0 length = {solution.body_scales[0,0]:.3f} m')
-print(f' b1 length = {solution.body_scales[1,0]:.3f} m\n')
+scales = [p for p in solution.parameters if isinstance(p, BodyScale)]
+print(f' b0 length = {scales[0].value[0]:.3f} m')
+print(f' b1 length = {scales[1].value[0]:.3f} m\n')
 
 # Plot joint kinematics from the solution compared to the original simulation.
 import matplotlib.pyplot as plt
