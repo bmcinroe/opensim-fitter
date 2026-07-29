@@ -2,7 +2,7 @@ import numpy as np
 import casadi as ca
 import opensim as osim
 from abc import ABC, abstractmethod
-from .model import ModelCache, BodyScaleGroup, TranslationScaleGroup
+from .model import ModelCache, BodyScaleGroup
 
 ###########
 # HELPERS #
@@ -186,18 +186,14 @@ class BilevelCost(TrackingCost):
     def __init__(self):
         super().__init__()
 
-    def apply_scales(self, body_scales: np.ndarray, translation_scales: np.ndarray,
-                     state: osim.State) -> None:
+    def apply_scales(self, body_scales: np.ndarray, state: osim.State) -> None:
         """
-        Apply body-scale and translation-scale overrides to `state`. Invalidates
-        Stage::Instance and higher.
+        Apply body-scale overrides to `state`. Invalidates Stage::Instance and higher.
 
         Parameters
         ----------
         body_scales: np.ndarray, shape (3 * len(body_scale_groups),)
             XYZ body-scale variables, one 3-vector per BodyScaleGroup.
-        translation_scales: np.ndarray, shape (3 * len(ts_groups),)
-            XYZ translation-scale variables, one 3-vector per TranslationScaleGroup.
         state: osim.State
             The State to update.
         """
@@ -205,13 +201,6 @@ class BilevelCost(TrackingCost):
         # set of body scales.
         self.mc.set_scaled_mobilizer_frame_positions(state, self.body_scale_groups,
                                                         body_scales)
-
-        # Apply translation scales to the model.
-        for g_idx, group in enumerate(self.translation_scale_groups):
-            ts = np.asarray(translation_scales[3*g_idx : 3*g_idx+3], dtype=float)
-            tscale_vec = osim.Vec3(float(ts[0]), float(ts[1]), float(ts[2]))
-            for cj in group.custom_joints:
-                cj.setTranslationScale(state, tscale_vec)
 
 
 class FrameTrackingCost(FrameTasks, TrackingCost):
@@ -311,8 +300,8 @@ class MarkerBilevelCost(MarkerTasks, BilevelCost):
     """
     A tracking cost that computes the aggregate error between model markers' scaled
     positions and corresponding reference positions as a function of the model's
-    generalized coordinates, body scales, and (optionally) per-CustomJoint
-    translation scales. Individual markers are registered via add_marker().
+    generalized coordinates and body scales. Individual markers are registered via
+    add_marker().
 
     Parameters
     ----------
@@ -323,16 +312,11 @@ class MarkerBilevelCost(MarkerTasks, BilevelCost):
         Groups of bodies each sharing one set of XYZ body scales. Each entry
         contains a list of mobilized body indexes defining which bodies are scaled and
         how Jacobian columns are aggregated.
-    translation_scale_groups: list[TranslationScaleGroup], optional
-        Groups of CustomJoints sharing one set of XYZ translation-scale factors.
-        Defaults to no translation-scale optimization.
     """
-    def __init__(self, mc: ModelCache, body_scale_groups: list[BodyScaleGroup],
-                 translation_scale_groups: list[TranslationScaleGroup] = []):
+    def __init__(self, mc: ModelCache, body_scale_groups: list[BodyScaleGroup]):
         self.mc = mc
         self.initialize_tasks()
         self.body_scale_groups = body_scale_groups
-        self.translation_scale_groups = translation_scale_groups
 
         # Cache references to joints associated with each inboard and outboard frame in
         # each scale group.
@@ -345,21 +329,11 @@ class MarkerBilevelCost(MarkerTasks, BilevelCost):
                 for k in group.mobod_indexes
                 for c in self.mc.children_of[int(k)]]
 
-        # Cache references to CustomJoints translations scales in each translation scale
-        # group.
-        for group in self.translation_scale_groups:
-            custom_joints = []
-            for path in group.joint_paths:
-                cj = osim.CustomJoint.safeDownCast(self.mc.model.getComponent(path))
-                custom_joints.append(cj)
-            group.custom_joints = custom_joints
-
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
         Jq = np.zeros((1, len(self.mc.q_indexes)))
         Js = np.zeros((1, 3 * len(self.body_scale_groups)))
-        Jt = np.zeros((1, 3 * len(self.translation_scale_groups)))
         if self.num_tasks == 0:
-            return [Jq, Js, Jt]
+            return [Jq, Js]
 
         # Calculate the per-marker error gradient in Ground. This is a force-like term
         # will be multiplied with (the transpose of) each position Jacobian below.
@@ -394,25 +368,15 @@ class MarkerBilevelCost(MarkerTasks, BilevelCost):
         Js = self.mc.calc_position_jacobian_wrt_body_scales(state, dp_GB,
                                                               self.body_scale_groups)
 
-        # Calculate the position-error Jacobian with respect to the CustomJoint
-        # translation scales.
-        for g_idx, group in enumerate(self.translation_scale_groups):
-            col = np.zeros(3)
-            for cj in group.custom_joints:
-                tcol = cj.multiplyByPositionJacobianWrtTranslationScaleTranspose(
-                        state, dp_GB)
-                col += tcol.to_numpy()
-            Jt[0, 3*g_idx:3*(g_idx+1)] = col
-
-        return [Jq, Js, Jt]
+        return [Jq, Js]
 
 
 class FrameBilevelCost(FrameTasks, BilevelCost):
     """
     A tracking cost that computes the aggregate error between model frames' scaled
     positions and corresponding reference positions as a function of the model's
-    generalized coordinates, body scales, and (optionally) per-CustomJoint
-    translation scales. Individual frames are registered via add_frame().
+    generalized coordinates and body scales. Individual frames are registered via
+    add_frame().
 
     Parameters
     ----------
@@ -423,16 +387,11 @@ class FrameBilevelCost(FrameTasks, BilevelCost):
         Groups of bodies each sharing one set of XYZ body scales. Each entry
         contains a list of mobilized body indexes defining which bodies are scaled and
         how Jacobian columns are aggregated.
-    translation_scale_groups: list[TranslationScaleGroup], optional
-        Groups of CustomJoints sharing one set of XYZ translation-scale factors.
-        Defaults to no translation-scale optimization.
     """
-    def __init__(self, mc: ModelCache, body_scale_groups: list[BodyScaleGroup],
-                 translation_scale_groups: list[TranslationScaleGroup] = []):
+    def __init__(self, mc: ModelCache, body_scale_groups: list[BodyScaleGroup]):
         self.mc = mc
         self.initialize_tasks()
         self.body_scale_groups = body_scale_groups
-        self.translation_scale_groups = translation_scale_groups
 
         # Cache references to joints associated with each inboard and outboard frame in
         # each scale group.
@@ -445,21 +404,11 @@ class FrameBilevelCost(FrameTasks, BilevelCost):
                 for k in group.mobod_indexes
                 for c in self.mc.children_of[int(k)]]
 
-        # Cache references to CustomJoints translations scales in each translation scale
-        # group.
-        for group in self.translation_scale_groups:
-            custom_joints = []
-            for path in group.joint_paths:
-                cj = osim.CustomJoint.safeDownCast(self.mc.model.getComponent(path))
-                custom_joints.append(cj)
-            group.custom_joints = custom_joints
-
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
         Jq = np.zeros((1, len(self.mc.q_indexes)))
         Js = np.zeros((1, 3 * len(self.body_scale_groups)))
-        Jt = np.zeros((1, 3 * len(self.translation_scale_groups)))
         if self.num_tasks == 0:
-            return [Jq, Js, Jt]
+            return [Jq, Js]
 
         # Loop over all frames and compute the "spatial error" (i.e., the combined
         # position and orientation error) for each.
@@ -511,17 +460,7 @@ class FrameBilevelCost(FrameTasks, BilevelCost):
         Js = self.mc.calc_position_jacobian_wrt_body_scales(state, dp_GB,
                                                             self.body_scale_groups)
 
-        # Calculate the position-error Jacobian with respect to the CustomJoint
-        # translation scales.
-        for g_idx, group in enumerate(self.translation_scale_groups):
-            col = np.zeros(3)
-            for cj in group.custom_joints:
-                tcol = cj.multiplyByPositionJacobianWrtTranslationScaleTranspose(
-                        state, dp_GB)
-                col += tcol.to_numpy()
-            Jt[0, 3*g_idx:3*(g_idx+1)] = col
-
-        return [Jq, Js, Jt]
+        return [Jq, Js]
 
 
 class Function(ca.Callback, ABC):
@@ -707,8 +646,8 @@ class TrackingCostFunction(Function):
 class BilevelCostFunction(Function):
     """
     A CasADi callback that evaluates the sum of tracking costs over a set of model
-    markers with respect to the model's generalized coordinates, a set of body
-    scales, and (optionally) a set of per-`CustomJoint` translation scales.
+    markers with respect to the model's generalized coordinates and a set of body
+    scales.
 
     Parameters
     ----------
@@ -720,35 +659,25 @@ class BilevelCostFunction(Function):
     body_scale_groups: list[BodyScaleGroup]
         Groups of bodies each sharing one set of XYZ body scales. The i-th 3-vector of
         body scales is broadcast to every body in `body_scale_groups[i]`.
-    translation_scale_groups: list[TranslationScaleGroup], optional
-        Groups of CustomJoints sharing one set of XYZ translation-scale factors.
-        Defaults to no translation-scale optimization.
     opts: dict
         A dictionary of options to pass to the CasADi callback constructor.
     """
     def __init__(self, name: str, mc: ModelCache,
-                 body_scale_groups: list[BodyScaleGroup],
-                 translation_scale_groups: list[TranslationScaleGroup] = [], opts={}):
+                 body_scale_groups: list[BodyScaleGroup], opts={}):
         self.body_scale_groups = body_scale_groups
-        self.translation_scale_groups = translation_scale_groups
         Function.__init__(self, name, mc, opts=opts)
-        self.marker_cost = MarkerBilevelCost(mc, self.body_scale_groups,
-                                             self.translation_scale_groups)
-        self.frame_cost = FrameBilevelCost(mc, self.body_scale_groups,
-                                           self.translation_scale_groups)
+        self.marker_cost = MarkerBilevelCost(mc, self.body_scale_groups)
+        self.frame_cost = FrameBilevelCost(mc, self.body_scale_groups)
 
     def apply_state(self, arg):
         """
-        Apply input coordinates and scale variables to the model State, then realize
-        to Position.
+        Apply input coordinates and body-scale variables to the model State, then
+        realize to Position.
         """
         body_scales = np.squeeze(arg[1].full())
         body_scales = np.atleast_1d(body_scales).astype(float)
-        tscales = np.squeeze(arg[2].full()) if len(self.translation_scale_groups) > 0 \
-                  else np.zeros(0)
-        tscales = np.atleast_1d(tscales).astype(float)
-        self.marker_cost.apply_scales(body_scales, tscales, self.state)
-        self.frame_cost.apply_scales(body_scales, tscales, self.state)
+        self.marker_cost.apply_scales(body_scales, self.state)
+        self.frame_cost.apply_scales(body_scales, self.state)
 
         q = np.zeros(self.state.getNQ())
         q[self.mc.q_indexes] = np.squeeze(arg[0].full())
@@ -767,7 +696,7 @@ class BilevelCostFunction(Function):
                                   orientation_weight)
 
     def _get_num_inputs(self):
-        return 3
+        return 2
 
     def _get_num_outputs(self):
         return 1
@@ -777,8 +706,6 @@ class BilevelCostFunction(Function):
             return len(self.mc.q_indexes)
         elif i == 1:
             return 3 * len(self.body_scale_groups)
-        elif i == 2:
-            return 3 * len(self.translation_scale_groups)
         else:
             raise IndexError(f'Invalid input index {i} for BilevelCostFunction.')
 
