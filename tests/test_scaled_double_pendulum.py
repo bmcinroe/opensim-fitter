@@ -12,6 +12,8 @@ import numpy as np
 
 from osimfit.data_sources import MarkerSource
 from osimfit.solvers import SplineBasedBilevelSolver
+from osimfit.model import BodyScale
+from osimfit.bounds import Bounds
 
 
 def create_double_pendulum(length1: float, length2: float) -> osim.Model:
@@ -102,8 +104,8 @@ def test_pendulum_bilevel_recovers_ground_truth_lengths(tmp_path):
         body_scale_regularization_weight=1e-2,
     )
     solver.add_marker_reference_data(marker_source)
-    solver.add_body_scale('/bodyset/b0', 0.5, 2.0)
-    solver.add_body_scale('/bodyset/b1', 0.5, 2.0)
+    solver.add_parameter(BodyScale('/bodyset/b0', Bounds(0.5, 2.0), np.ones(3)))
+    solver.add_parameter(BodyScale('/bodyset/b1', Bounds(0.5, 2.0), np.ones(3)))
 
     solution = solver.solve()
 
@@ -117,14 +119,13 @@ def test_pendulum_bilevel_recovers_ground_truth_lengths(tmp_path):
     # The recovered X-axis body scales match the ground-truth lengths. Y and Z scales
     # should stay near 1.0 since the truth model only varies length along the local X
     # axis.
-    assert [g.body_paths for g in solution.body_scale_groups] == [
-        ['/bodyset/b0'], ['/bodyset/b1']
-    ]
-    assert abs(solution.body_scales[0, 0] - true_b0_length) < 0.02
-    assert abs(solution.body_scales[1, 0] - true_b1_length) < 0.02
+    scales = [p for p in solution.parameters if isinstance(p, BodyScale)]
+    assert [p.paths for p in scales] == [['/bodyset/b0'], ['/bodyset/b1']]
+    assert abs(scales[0].value[0] - true_b0_length) < 0.02
+    assert abs(scales[1].value[0] - true_b1_length) < 0.02
     for body_idx in (0, 1):
         for axis in (1, 2):
-            assert abs(solution.body_scales[body_idx, axis] - 1.0) < 0.05
+            assert abs(scales[body_idx].value[axis] - 1.0) < 0.05
 
 
 def test_pendulum_bilevel_recovers_shared_length_under_asymmetric_truth(
@@ -158,24 +159,24 @@ def test_pendulum_bilevel_recovers_shared_length_under_asymmetric_truth(
         body_scale_regularization_weight=1e-2,
     )
     solver.add_marker_reference_data(marker_source)
-    solver.add_body_scale(
-        ['/bodyset/b0', '/bodyset/b1'], 0.5, 2.0)
+    solver.add_parameter(BodyScale(
+        ['/bodyset/b0', '/bodyset/b1'], Bounds(0.5, 2.0), np.ones(3)))
 
     solution = solver.solve()
 
-    # One body scale group → one row of 3 components.
-    assert solution.body_scales.shape == (1, 3)
-    assert len(solution.body_scale_groups) == 1
-    assert solution.body_scale_groups[0].body_paths == [
-        '/bodyset/b0', '/bodyset/b1']
+    # One shared body scale parameter → one XYZ value shared across both bodies.
+    scales = [p for p in solution.parameters if isinstance(p, BodyScale)]
+    assert len(scales) == 1
+    assert scales[0].value.shape == (3,)
+    assert scales[0].paths == ['/bodyset/b0', '/bodyset/b1']
 
     # The shared scale must lie strictly between the two ground-truth lengths.
-    shared_sx = solution.body_scales[0, 0]
+    shared_sx = scales[0].value[0]
     assert true_b1_length < shared_sx < true_b0_length
 
     # Y and Z scales remain near 1.0 since the truth varies length along X.
     for axis in (1, 2):
-        assert abs(solution.body_scales[0, axis] - 1.0) < 0.05
+        assert abs(scales[0].value[axis] - 1.0) < 0.05
 
 
 def test_pendulum_update_model_applies_recovered_body_scales(tmp_path):
@@ -212,8 +213,8 @@ def test_pendulum_update_model_applies_recovered_body_scales(tmp_path):
         body_scale_regularization_weight=1e-2,
     )
     solver.add_marker_reference_data(marker_source)
-    solver.add_body_scale('/bodyset/b0', 0.5, 2.0)
-    solver.add_body_scale('/bodyset/b1', 0.5, 2.0)
+    solver.add_parameter(BodyScale('/bodyset/b0', Bounds(0.5, 2.0), np.ones(3)))
+    solver.add_parameter(BodyScale('/bodyset/b1', Bounds(0.5, 2.0), np.ones(3)))
     solution = solver.solve()
 
     # Apply the recovered scales to a fresh unscaled model so this assertion is

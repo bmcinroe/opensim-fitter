@@ -2,14 +2,6 @@
 <OpenSimDocument Version="30000">
 	<MarkerSet name="loadedwalking_subject11_prescale">
 		<objects>
-			<Marker name="Head">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>torso</body>
-				<!--Location of a marker on the body segment.-->
-				<location> 0 0.67 0</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
 			<Marker name="R.Shoulder">
 				<!--Body segment in the model on which the marker resides.-->
 				<body>torso</body>
@@ -152,7 +144,7 @@
 				<!--Location of a marker on the body segment.-->
 				<location> -0.154 0.038 0.055</location>
 				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>false</fixed>
+				<fixed>true</fixed>
 			</Marker>
 			<Marker name="L.PSIS">
 				<!--Body segment in the model on which the marker resides.-->
@@ -160,7 +152,7 @@
 				<!--Location of a marker on the body segment.-->
 				<location> -0.154 0.038 -0.055</location>
 				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>false</fixed>
+				<fixed>true</fixed>
 			</Marker>
 			<Marker name="R_HJC">
 				<!--Body segment in the model on which the marker resides.-->
@@ -256,7 +248,7 @@
 				<!--Location of a marker on the body segment.-->
 				<location> -0.005 -0.3788 0.053</location>
 				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>false</fixed>
+				<fixed>true</fixed>
 			</Marker>
 			<Marker name="R.MAnkle">
 				<!--Body segment in the model on which the marker resides.-->
@@ -272,7 +264,7 @@
 				<!--Location of a marker on the body segment.-->
 				<location> 0.23 0.037 -0.016</location>
 				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>false</fixed>
+				<fixed>true</fixed>
 			</Marker>
 			<Marker name="R.MT5">
 				<!--Body segment in the model on which the marker resides.-->
@@ -280,7 +272,7 @@
 				<!--Location of a marker on the body segment.-->
 				<location> 0.16 0.02 0.05</location>
 				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>false</fixed>
+				<fixed>true</fixed>
 			</Marker>
 			<Marker name="R.Heel">
 				<!--Body segment in the model on which the marker resides.-->
@@ -288,7 +280,7 @@
 				<!--Location of a marker on the body segment.-->
 				<location> -0.02 0.02 -0.01</location>
 				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>false</fixed>
+				<fixed>true</fixed>
 			</Marker>
 			<Marker name="L.TH1">
 				<!--Body segment in the model on which the marker resides.-->
@@ -368,7 +360,7 @@
 				<!--Location of a marker on the body segment.-->
 				<location> -0.005 -0.3788 -0.053</location>
 				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>false</fixed>
+				<fixed>true</fixed>
 			</Marker>
 			<Marker name="L.MAnkle">
 				<!--Body segment in the model on which the marker resides.-->
@@ -384,7 +376,7 @@
 				<!--Location of a marker on the body segment.-->
 				<location> 0.23 0.037 0.016</location>
 				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>false</fixed>
+				<fixed>true</fixed>
 			</Marker>
 			<Marker name="L.Heel">
 				<!--Body segment in the model on which the marker resides.-->
@@ -392,133 +384,13 @@
 				<!--Location of a marker on the body segment.-->
 				<location> -0.02 0.02 0.01</location>
 				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>false</fixed>
+				<fixed>true</fixed>
 			</Marker>
 			<Marker name="L.MT5">
 				<!--Body segment in the model on which the marker resides.-->
 				<body>calcn_l</body>
 				<!--Location of a marker on the body segment.-->
 				<location> 0.16 0.02 -0.05</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>false</fixed>
-			</Marker>
-			<Marker name="MidPSIS">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>pelvis</body>
-				<!--Location of a marker on the body segment.-->
-				<location> -0.154 0.038 0</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
-			<Marker name="MidASIS">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>pelvis</body>
-				<!--Location of a marker on the body segment.-->
-				<location> 0.013 0.03 0</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
-			<Marker name="MidClavicle">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>torso</body>
-				<!--Location of a marker on the body segment.-->
-				<location> 0.046 0.385 0</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
-			<Marker name="L.AnkleJoint">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>tibia_l</body>
-				<!--Location of a marker on the body segment.-->
-				<location> 0.0005 -0.3788 -0.0075</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
-			<Marker name="L.KneeJoint">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>femur_l</body>
-				<!--Location of a marker on the body segment.-->
-				<location> 0.0025 -0.4025 0.0015</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
-			<Marker name="L.HeelGround">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>calcn_l</body>
-				<!--Location of a marker on the body segment.-->
-				<location> -0.02 -0.005 0.01</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
-			<Marker name="L.MT5Ground">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>calcn_l</body>
-				<!--Location of a marker on the body segment.-->
-				<location> 0.16 -0.005 -0.05</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
-			<Marker name="L.ToeGround">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>calcn_l</body>
-				<!--Location of a marker on the body segment.-->
-				<location> 0.23 -0.005 0.016</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
-			<Marker name="L.AnkleJointGround">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>tibia_l</body>
-				<!--Location of a marker on the body segment.-->
-				<location> 0.0005 -0.44695 -0.0075</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
-			<Marker name="R.AnkleJoint">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>tibia_r</body>
-				<!--Location of a marker on the body segment.-->
-				<location> 0.0005 -0.3788 0.0075</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
-			<Marker name="R.KneeJoint">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>femur_r</body>
-				<!--Location of a marker on the body segment.-->
-				<location> 0.0025 -0.4025 -0.0015</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
-			<Marker name="R.HeelGround">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>calcn_r</body>
-				<!--Location of a marker on the body segment.-->
-				<location> -0.02 -0.005 -0.01</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
-			<Marker name="R.MT5Ground">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>calcn_r</body>
-				<!--Location of a marker on the body segment.-->
-				<location> 0.16 -0.005 0.05</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
-			<Marker name="R.ToeGround">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>calcn_r</body>
-				<!--Location of a marker on the body segment.-->
-				<location> 0.23 -0.005 -0.016</location>
-				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
-				<fixed>true</fixed>
-			</Marker>
-			<Marker name="R.AnkleJointGround">
-				<!--Body segment in the model on which the marker resides.-->
-				<body>tibia_r</body>
-				<!--Location of a marker on the body segment.-->
-				<location> 0.0005 -0.44695 0.0075</location>
 				<!--Flag (true or false) specifying whether or not a marker should be kept fixed in the marker placement step.  i.e. If false, the marker is allowed to move.-->
 				<fixed>true</fixed>
 			</Marker>

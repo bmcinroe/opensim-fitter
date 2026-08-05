@@ -1,11 +1,15 @@
+import copy
 import numpy as np
 import opensim as osim
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from .bounds import Bounds
 
-###############
-# SCALE GROUP #
-###############
+
+##########
+# GROUPS #
+##########
 
 @dataclass
 class BodyScaleGroup:
@@ -34,9 +38,34 @@ class BodyScaleGroup:
     outboard_joints: list[osim.Joint] = field(default_factory=list, compare=False)
 
 
-#########
-# MODEL #
-#########
+@dataclass
+class OffsetGroup:
+    """
+    A group of markers or frames sharing one set of XYZ offsets. The offset is an
+    additive translation, expressed in each component's base frame, applied to the
+    component's placement (a marker's location or a frame's translation).
+
+    Attributes
+    ----------
+    component_paths: list[str]
+        Absolute model paths to the markers or frames in this group.
+    """
+    component_paths: list[str]
+
+
+@dataclass
+class MarkerOffsetGroup(OffsetGroup):
+    """An `OffsetGroup` whose components are markers (offsets a marker's location)."""
+
+
+@dataclass
+class FrameOffsetGroup(OffsetGroup):
+    """An `OffsetGroup` whose components are frames (offsets a frame's translation)."""
+
+
+###############
+# MODEL CACHE #
+###############
 
 class ModelCache:
     """
@@ -329,3 +358,252 @@ class ModelCache:
             Js[0, 3*i:3*(i+1)] = col
 
         return Js
+
+    def get_tracking_marker_paths(self):
+        """
+        Get a list of all markers in the model whose '<fixed>' property is ``False``.
+        """
+        tracking_markers: list[str] = []
+        for i in range(self.model.getMarkerSet().getSize()):
+            marker = self.model.getMarkerSet().get(i)
+            if not marker.get_fixed():
+                tracking_markers.append(marker.getAbsolutePathString())
+
+        return tracking_markers
+
+##############
+# PARAMETERS #
+##############
+
+class Parameter(ABC):
+    """
+    Base class for an optimized parameter. The parameter can be assigned to a single
+    component, or a group of model components of the same type. Each parameter will
+    create single block of optimization variables in a bilevel problem. Subclasses
+    must supply the per-type behavior a solver needs by implementing the abstract
+    methods `validate`, `to_group`, `append_guess_and_bounds`, and `apply_to_model`.
+
+    Attributes
+    ----------
+    value: np.ndarray or None
+        The optimized (or initial-guess) value for this parameter, or ``None`` when
+        unset. Populated by solvers and carried on solution objects.
+    group_type: type
+        The math-layer descriptor type (e.g., `BodyScaleGroup`) for this parameter, as
+        consumed by the cost callback.
+    """
+    value: np.ndarray = None
+    group_type: type = None
+
+    @abstractmethod
+    def validate(self, mc: ModelCache) -> None:
+        """
+        Validate this parameter against the model and cache any derived data. Raise a
+        ValueError if the configuration is invalid.
+        """
+
+    @abstractmethod
+    def to_group(self):
+        """
+        Return the math-layer descriptor (e.g., `BodyScaleGroup`) for this parameter, as
+        consumed by the cost callback.
+        """
+
+    @abstractmethod
+    def append_guess_and_bounds(self, x0: list, lbx: list, ubx: list) -> None:
+        """
+        Append this parameter's initial guess and per-variable bounds, in place, to the
+        solver's `x0`, `lbx`, and `ubx` arrays.
+        """
+
+    @abstractmethod
+    def apply_to_model(self, model: osim.Model) -> None:
+        """
+        Apply this parameter's `value` to the `model`.
+        """
+
+    @property
+    @abstractmethod
+    def num_variables(self) -> int:
+        """
+        The number of optimization variables in this parameter's block.
+        """
+
+    def with_value(self, value: np.ndarray) -> "Parameter":
+        """
+        Return a copy of this parameter carrying `value`, leaving the original
+        unchanged. Raise a ValueError if `value` does not have `num_variables` elements.
+        """
+        value = np.asarray(value, dtype=float).reshape(-1)
+        if value.size != self.num_variables:
+            raise ValueError(
+                f'{type(self).__name__} expected a value with {self.num_variables} '
+                f'element(s), but got {value.size}.')
+        new = copy.copy(self)
+        new.value = value
+        return new
+
+
+class Vec3Parameter(Parameter):
+    """
+    A parameter representing a Vec3 quantity in an OpenSim model.
+
+    Parameters
+    ----------
+    paths: str or list[str]
+        Absolute model path(s) to the component(s) sharing this parameter's Vec3 value.
+    bounds: Bounds
+        Bounds applied to each element of the Vec3.
+    value: np.ndarray
+        Initial value for the Vec3.
+    """
+    def __init__(self, paths: str | list[str], bounds: Bounds, value: np.ndarray):
+        if isinstance(paths, str):
+            paths = [paths]
+        if not paths:
+            raise ValueError(
+                'paths must be a non-empty string or list of strings.')
+        self.paths = list(paths)
+        self.bounds = bounds
+        value = np.asarray(value, dtype=float).reshape(-1)
+        if value.size != self.num_variables:
+            raise ValueError(
+                f'{type(self).__name__} expected a value with {self.num_variables} '
+                f'element(s), but got {value.size}.')
+        self.value = value
+
+    @property
+    def num_variables(self) -> int:
+        return 3
+
+    def append_guess_and_bounds(self, x0: list, lbx: list, ubx: list) -> None:
+        x0 += self.value.tolist()
+        lbx += [self.bounds.lower_bound] * 3
+        ubx += [self.bounds.upper_bound] * 3
+
+
+class BodyScale(Vec3Parameter):
+    """
+    An optimized Vec3 of body scales shared across one or more bodies. Pass a single
+    body path to scale one body, or a list of body paths to share one set of body scales
+    across a group of bodies (e.g., for left-right symmetric scaling).
+
+    Parameters
+    ----------
+    paths: str or list[str]
+        Absolute model path(s) to the body or bodies whose body scale is optimized.
+    bounds: Bounds
+        Bounds applied to each Vec3 scale factor.
+    value: np.ndarray
+        Initial [sx, sy, sz] scale.
+    """
+    group_type = BodyScaleGroup
+
+    def __init__(self, paths: str | list[str], bounds: Bounds, value: np.ndarray):
+        super().__init__(paths, bounds, value)
+        self.mobod_indexes: list[int] = None
+
+    def validate(self, mc: ModelCache) -> None:
+        self.mobod_indexes = []
+        for path in self.paths:
+            body = osim.Body.safeDownCast(mc.model.getComponent(path))
+            if body is None:
+                raise ValueError(f'Component at path {path} is not a Body.')
+            self.mobod_indexes.append(int(body.getMobilizedBodyIndex()))
+
+    def to_group(self) -> BodyScaleGroup:
+        return BodyScaleGroup(list(self.paths), list(self.mobod_indexes))
+
+    def apply_to_model(self, model: osim.Model) -> None:
+        raise NotImplementedError(
+            'BodyScale.apply_to_model is not implemented.')
+
+
+class OffsetParameter(Vec3Parameter):
+    """
+    An optimized Vec3 placement offset shared across one or more markers or frames. The
+    offset is an additive translation, expressed in each component's base frame, applied
+    to the component's placement. Concrete subclasses specify the component type and how
+    the offset is applied into the model.
+    """
+    _component_type: type = None
+    _label: str = 'component'
+
+    def validate(self, mc: ModelCache) -> None:
+        for path in self.paths:
+            component = self._component_type.safeDownCast(mc.model.getComponent(path))
+            if component is None:
+                raise ValueError(
+                    f'Component at path {path} is not a '
+                    f'{self._component_type.__name__}.')
+            parent_frame = component.getParentFrame()
+            base_frame = parent_frame.findBaseFrame()
+            if (parent_frame.getAbsolutePathString() !=
+                    base_frame.getAbsolutePathString()):
+                raise ValueError(
+                    f'Cannot optimize an offset for {self._label} {path}: its parent '
+                    f'frame ({parent_frame.getAbsolutePathString()}) is not its base '
+                    f'frame ({base_frame.getAbsolutePathString()}). Offsets are only '
+                    f'supported for markers/frames attached directly to a body.')
+
+
+class MarkerOffset(OffsetParameter):
+    """
+    An optimized Vec3 offset applied to one or more markers' placement, expressed in
+    each marker's base frame. Pass a single marker path to offset one marker, or a list
+    to share one set of offsets across a group of markers.
+
+    Parameters
+    ----------
+    paths: str or list[str]
+        Absolute model path(s) to the marker(s) whose placement offset is optimized.
+    bounds: Bounds
+        Bounds applied to each Vec3 offset component.
+    value: np.ndarray, optional
+        Initial [ox, oy, oz] offset. Defaults to ``None`` (unset).
+    """
+    group_type = MarkerOffsetGroup
+    _component_type = osim.Marker
+    _label = 'marker'
+
+    def apply_to_model(self, model: osim.Model) -> None:
+        for path in self.paths:
+            marker = osim.Marker.safeDownCast(model.getComponent(path))
+            loc = marker.get_location()
+            marker.set_location(osim.Vec3(
+                loc[0] + float(self.value[0]), loc[1] + float(self.value[1]),
+                loc[2] + float(self.value[2])))
+
+    def to_group(self) -> MarkerOffsetGroup:
+        return MarkerOffsetGroup(list(self.paths))
+
+
+class FrameOffset(OffsetParameter):
+    """
+    An optimized Vec3 offset applied to one or more `PhysicalOffsetFrame` translations,
+    expressed in each frame's base frame. Pass a single frame path to offset one frame,
+    or a list to share one set of offsets across a group of frames.
+
+    Parameters
+    ----------
+    paths: str or list[str]
+        Absolute model path(s) to the frame(s) whose placement offset is optimized.
+    bounds: Bounds
+        Bounds applied to each Vec3 offset component.
+    value: np.ndarray, optional
+        Initial [ox, oy, oz] offset. Defaults to ``None`` (unset).
+    """
+    group_type = FrameOffsetGroup
+    _component_type = osim.PhysicalOffsetFrame
+    _label = 'frame'
+
+    def apply_to_model(self, model: osim.Model) -> None:
+        for path in self.paths:
+            frame = osim.PhysicalOffsetFrame.safeDownCast(model.getComponent(path))
+            t = frame.get_translation()
+            frame.set_translation(osim.Vec3(
+                t[0] + float(self.value[0]), t[1] + float(self.value[1]),
+                t[2] + float(self.value[2])))
+
+    def to_group(self) -> FrameOffsetGroup:
+        return FrameOffsetGroup(list(self.paths))
