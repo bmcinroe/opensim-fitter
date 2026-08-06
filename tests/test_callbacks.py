@@ -9,7 +9,7 @@ import casadi as ca
 import opensim as osim
 from pathlib import Path
 from osimfit.callbacks import (BilevelCostFunction, BodyScaleGroup,
-                               TrackingCostFunction, TranslationScaleGroup)
+                               TrackingCostFunction)
 from osimfit.model import ModelCache
 
 # Define the test model path.
@@ -39,52 +39,6 @@ def create_sliding_mass_model(offset_x: float = 0.0):
     model.addJoint(joint)
     model.addMarker(osim.Marker('m0', body, osim.Vec3(0)))
     model.addMarker(osim.Marker('m1', body, osim.Vec3(0.5, 0, 0)))
-    model.finalizeConnections()
-    return model
-
-
-def create_custom_joint_translation_model():
-    """
-    One body attached to ground by a CustomJoint with one driven rotation
-    about Y and a non-trivial sinusoidal X-translation. Has a marker at the
-    body origin and is used to exercise the translation-scale optimization
-    path (the X translation function value is non-zero at typical q, so its
-    translation-scale Jacobian column is non-zero).
-    """
-    model = osim.Model()
-    model.setName('custom_joint_translation')
-    body = osim.Body('body', 1.0, osim.Vec3(0), osim.Inertia(1))
-    model.addBody(body)
-
-    st = osim.SpatialTransform()
-    empty = osim.ArrayStr()
-    q_names = osim.ArrayStr(); q_names.append('q0')
-
-    ax = st.upd_rotation1()
-    ax.setCoordinateNames(empty); ax.set_axis(osim.Vec3(1, 0, 0))
-    ax.set_function(osim.Constant(0.0))
-    ax = st.upd_rotation2()
-    ax.setCoordinateNames(q_names); ax.set_axis(osim.Vec3(0, 1, 0))
-    ax.set_function(osim.LinearFunction(1.0, 0.0))
-    ax = st.upd_rotation3()
-    ax.setCoordinateNames(empty); ax.set_axis(osim.Vec3(0, 0, 1))
-    ax.set_function(osim.Constant(0.0))
-    q_names_t = osim.ArrayStr(); q_names_t.append('q0')
-    ax = st.upd_translation1()
-    ax.setCoordinateNames(q_names_t); ax.set_axis(osim.Vec3(1, 0, 0))
-    ax.set_function(osim.Sine(0.2, 1.0, 0.0))
-    ax = st.upd_translation2()
-    ax.setCoordinateNames(empty); ax.set_axis(osim.Vec3(0, 1, 0))
-    ax.set_function(osim.Constant(0.0))
-    ax = st.upd_translation3()
-    ax.setCoordinateNames(empty); ax.set_axis(osim.Vec3(0, 0, 1))
-    ax.set_function(osim.Constant(0.0))
-
-    cj = osim.CustomJoint(
-        'cj', model.getGround(), osim.Vec3(0), osim.Vec3(0),
-        body, osim.Vec3(0), osim.Vec3(0), st)
-    model.addJoint(cj)
-    model.addMarker(osim.Marker('m0', body, osim.Vec3(0)))
     model.finalizeConnections()
     return model
 
@@ -277,7 +231,7 @@ def test_bilevel_apply_scales_writes_xbm_on_target_mobod():
 
     state = cost.state
     cost.marker_cost.apply_scales(
-        np.array([2.0, 3.0, 4.0]), np.zeros(0), state)
+        np.array([2.0, 3.0, 4.0]), state)
     np.testing.assert_allclose(getX_BM(model, 0, state),
                                np.array([0.4 * 2.0, 0.0, 0.0]))
 
@@ -296,7 +250,7 @@ def test_bilevel_apply_scales_shared_group_broadcasts_across_members():
 
     state = cost.state
     cost.marker_cost.apply_scales(
-        np.array([2.0, 3.0, 4.0]), np.zeros(0), state)
+        np.array([2.0, 3.0, 4.0]), state)
     for k in (0, 1):
         np.testing.assert_allclose(getX_BM(model, k, state),
                                    np.array([0.4 * 2.0, 0.0, 0.0]))
@@ -318,7 +272,7 @@ def test_bilevel_apply_scales_mixed_groups_apply_independent_vectors():
 
     state = cost.state
     cost.marker_cost.apply_scales(
-        np.array([2.0, 3.0, 4.0, 5.0, 5.0, 5.0]), np.zeros(0), state)
+        np.array([2.0, 3.0, 4.0, 5.0, 5.0, 5.0]), state)
     for k in (0, 1):
         np.testing.assert_allclose(getX_BM(model, k, state),
                                    np.array([0.4 * 2.0, 0.0, 0.0]))
@@ -336,7 +290,7 @@ def test_bilevel_cost_function_empty_eval_is_zero():
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])])
     q = ca.DM.zeros(len(cost.mc.q_indexes))
     s = ca.DM.ones(3)
-    assert float(cost(q, s, ca.DM.zeros(0, 1))) == pytest.approx(0.0, abs=1e-12)
+    assert float(cost(q, s)) == pytest.approx(0.0, abs=1e-12)
 
 
 def test_bilevel_cost_function_scaling_changes_marker_world_position():
@@ -358,9 +312,9 @@ def test_bilevel_cost_function_scaling_changes_marker_world_position():
     s_unit = ca.DM([1.0, 1.0, 1.0])
     s_scaled = ca.DM([2.0, 1.0, 1.0])
     # At s_unit: m1 world = (-0.4 + 0.5) = 0.1. Error = (0.1 - 0.5)^2 = 0.16.
-    assert float(cost(q, s_unit, ca.DM.zeros(0, 1))) == pytest.approx(0.16, abs=1e-9)
+    assert float(cost(q, s_unit)) == pytest.approx(0.16, abs=1e-9)
     # At s_scaled X=2: m1 world = (-0.8 + 0.5) = -0.3. Error = (-0.3 - 0.5)^2 = 0.64.
-    assert float(cost(q, s_scaled, ca.DM.zeros(0, 1))) == pytest.approx(0.64, abs=1e-9)
+    assert float(cost(q, s_scaled)) == pytest.approx(0.64, abs=1e-9)
 
 
 def test_bilevel_cost_function_frame_at_reference_yields_zero():
@@ -376,7 +330,7 @@ def test_bilevel_cost_function_frame_at_reference_yields_zero():
     cost.add_frame_bilevel_cost('/bodyset/body', osim.Vec3(0), osim.Quaternion())
     q = ca.DM.zeros(len(cost.mc.q_indexes))
     s = ca.DM([1.0, 1.0, 1.0])
-    assert float(cost(q, s, ca.DM.zeros(0, 1))) == pytest.approx(0.0, abs=1e-12)
+    assert float(cost(q, s)) == pytest.approx(0.0, abs=1e-12)
 
 
 def test_bilevel_cost_function_scaling_changes_frame_world_position():
@@ -400,9 +354,9 @@ def test_bilevel_cost_function_scaling_changes_frame_world_position():
     s_unit = ca.DM([1.0, 1.0, 1.0])
     s_scaled = ca.DM([2.0, 1.0, 1.0])
     # At s_unit: origin = -0.4. Error = 2 * (-0.4)^2 = 0.32.
-    assert float(cost(q, s_unit, ca.DM.zeros(0, 1))) == pytest.approx(0.32, abs=1e-9)
+    assert float(cost(q, s_unit)) == pytest.approx(0.32, abs=1e-9)
     # At s_scaled X=2: origin = -0.8. Error = 2 * (-0.8)^2 = 1.28.
-    assert float(cost(q, s_scaled, ca.DM.zeros(0, 1))) == pytest.approx(1.28, abs=1e-9)
+    assert float(cost(q, s_scaled)) == pytest.approx(1.28, abs=1e-9)
 
 
 # Test BilevelCostFunction error Jacobian calcluations.
@@ -432,9 +386,9 @@ def test_bilevel_cost_function_jacobians_sliding_mass():
     x = ca.vertcat(q, s)
 
     J_jac = ca.Function('J_jac', [x],
-                        [ca.jacobian(cost_jac(q, s, ca.DM.zeros(0, 1)), x)])
+                        [ca.jacobian(cost_jac(q, s), x)])
     J_fd = ca.Function('J_fd', [x],
-                       [ca.jacobian(cost_fd(q, s, ca.DM.zeros(0, 1)), x)])
+                       [ca.jacobian(cost_fd(q, s), x)])
 
     val = np.concatenate([
         np.full(len(cost_jac.mc.q_indexes), 0.1),
@@ -475,65 +429,15 @@ def test_bilevel_cost_function_jacobians_full_body():
     x = ca.vertcat(q, s)
 
     J_jac = ca.Function('J_jac', [x],
-                        [ca.jacobian(cost_jac(q, s, ca.DM.zeros(0, 1)), x)])
+                        [ca.jacobian(cost_jac(q, s), x)])
     J_fd = ca.Function('J_fd', [x],
-                       [ca.jacobian(cost_fd(q, s, ca.DM.zeros(0, 1)), x)])
+                       [ca.jacobian(cost_fd(q, s), x)])
 
     val = np.concatenate([
         np.full(len(cost_jac.mc.q_indexes), 0.1),
         np.tile([1.1, 1.0, 1.0], bodyset.getSize()),
     ])
     assert np.allclose(J_jac(val).full(), J_fd(val).full(), atol=1e-6)
-
-
-def test_bilevel_cost_function_custom_joint_translation_scale_jacobian_matches_fd():
-    """
-    For a CustomJoint with a non-zero translation function, the third (Jt)
-    block of the bilevel Jacobian must match the finite-difference Jacobian
-    along the translation-scale axis at typical q.
-    """
-    model = create_custom_joint_translation_model()
-    model.initSystem()
-
-    body_scale_groups = [BodyScaleGroup(['/bodyset/body'], [1])]
-    ts_groups = [TranslationScaleGroup(['/jointset/cj'], [1])]
-    cost_jac = BilevelCostFunction(
-        'cost_jac', ModelCache(model),
-        body_scale_groups=body_scale_groups, translation_scale_groups=ts_groups)
-    cost_fd = BilevelCostFunction(
-        'cost_fd', ModelCache(model),
-        body_scale_groups=body_scale_groups, translation_scale_groups=ts_groups,
-        opts={'enable_fd': True})
-    for cost in (cost_jac, cost_fd):
-        cost.add_marker_bilevel_cost(
-            '/markerset/m0', osim.Vec3(0.3, 0, 0), weight=2.0)
-        cost.add_frame_bilevel_cost(
-            '/bodyset/body', osim.Vec3(0.3, 0, 0),
-            osim.Quaternion(0.9, 0.0, 0.4, 0.0),
-            position_weight=2.0, orientation_weight=1.0)
-
-    nq = len(cost_jac.mc.q_indexes)
-    q = ca.SX.sym('q', nq)
-    s = ca.SX.sym('s', 3)
-    ts = ca.SX.sym('ts', 3)
-    x = ca.vertcat(q, s, ts)
-    J_jac = ca.Function('J_jac', [x],
-                        [ca.jacobian(cost_jac(q, s, ts), x)])
-    J_fd = ca.Function('J_fd', [x],
-                       [ca.jacobian(cost_fd(q, s, ts), x)])
-
-    val = np.concatenate([
-        np.full(nq, 0.1),
-        np.array([1.1, 1.0, 1.0]),
-        np.array([1.2, 1.0, 1.0]),
-    ])
-    A = J_jac(val).full()
-    F = J_fd(val).full()
-    assert np.allclose(A, F, atol=1e-6)
-    # The X component of the translation-scale Jacobian column should be
-    # non-zero (q is non-zero so the X translation function value is
-    # non-zero, hence the local Jacobian column is non-zero).
-    assert abs(A[0, nq + 3]) > 1e-8
 
 
 def test_bilevel_cost_function_grouped_jacobian_sums_solo_and_matches_fd():
@@ -581,10 +485,10 @@ def test_bilevel_cost_function_grouped_jacobian_sums_solo_and_matches_fd():
     x_shared = ca.vertcat(q, s_shared)
     J_shared_fn = ca.Function(
         'J_shared', [x_shared],
-        [ca.jacobian(cost_shared(q, s_shared, ca.DM.zeros(0, 1)), x_shared)])
+        [ca.jacobian(cost_shared(q, s_shared), x_shared)])
     J_fd_fn = ca.Function(
         'J_fd', [x_shared],
-        [ca.jacobian(cost_fd(q, s_shared, ca.DM.zeros(0, 1)), x_shared)])
+        [ca.jacobian(cost_fd(q, s_shared), x_shared)])
     val_shared = np.concatenate([
         np.full(nq, 0.1),
         np.array([1.1, 1.0, 1.0]),
@@ -599,7 +503,7 @@ def test_bilevel_cost_function_grouped_jacobian_sums_solo_and_matches_fd():
     x_solo = ca.vertcat(q, s_solo)
     J_solo_fn = ca.Function(
         'J_solo', [x_solo],
-        [ca.jacobian(cost_solo(q, s_solo, ca.DM.zeros(0, 1)), x_solo)])
+        [ca.jacobian(cost_solo(q, s_solo), x_solo)])
     val_solo = np.concatenate([
         np.full(nq, 0.1),
         np.array([1.1, 1.0, 1.0, 1.1, 1.0, 1.0]),
