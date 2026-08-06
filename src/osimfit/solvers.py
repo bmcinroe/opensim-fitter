@@ -3,9 +3,11 @@ import casadi as ca
 import opensim as osim
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+
+from .bounds import Bounds
 from .data_sources import DataSource, MarkerSource, TheiaFrameSource
 from .callbacks import TrackingCostFunction, BilevelCostFunction
-from .model import ModelCache, BodyScaleGroup
+from .model import ModelCache, Parameter, BodyScale, MarkerOffset, FrameOffset
 from .scaling import Axis, Scaler, ManualBodyScale
 
 
@@ -24,18 +26,6 @@ class TheiaFrameData:
 class MarkerData:
     labels: list[str]
     positions: osim.TimeSeriesTableVec3
-
-
-@dataclass
-class Bounds:
-    lower_bound: float
-    upper_bound: float
-
-
-@dataclass
-class BodyScale:
-    group: BodyScaleGroup
-    bounds: Bounds
 
 
 ############
@@ -103,20 +93,43 @@ class SplineTrackingSolution(TrackingSolution):
 @dataclass
 class BilevelSolution(TrackingSolution):
     """
-    Solution for bilevel solvers. Separates the optimized coordinate trajectories
-    from the optimized body scales.
+    Solution for bilevel solvers. Separates the optimized coordinate trajectories from
+    the optimized parameters (e.g., body scales, marker and frame offsets).
 
     Attributes
     ----------
-    body_scales: np.ndarray, shape (num_body_scales, 3)
-        Optimal [sx, sy, sz] body scales, one row per body scale group.
-    body_scale_groups: list[BodyScaleGroup]
-        BodyScaleGroup objects paired row-wise with body_scales. Each entry
-        names the bodies sharing that set of XYZ body scales. Single-body
-        scales appear as a BodyScaleGroup with one body path and mobilized body index.
+    parameters: list[Parameter]
+        The optimized parameters, each carrying its optimal ``value``. This is an
+        independent snapshot of the solver's parameter configuration. The same list
+        (with values set) can be handed back to ``solve()`` as an initial guess.
     """
-    body_scales: np.ndarray = None
-    body_scale_groups: list[BodyScaleGroup] = None
+    parameters: list[Parameter] = None
+
+    def get_parameter(self, path: str, cls: type = Parameter) -> Parameter:
+        """
+        Return the optimized parameter of type `cls` whose group contains `path`.
+
+        Parameters
+        ----------
+        path: str
+            Absolute model path of a component in the target parameter's group.
+        cls: type, optional
+            Restrict the search to parameters of this `Parameter` subtype (e.g.,
+            `BodyScale`, `MarkerOffset`, or `FrameOffset`). Defaults to `Parameter`
+            (any type).
+
+        Raises
+        ------
+        KeyError
+            If not exactly one parameter of type `cls` has `path` in its group.
+        """
+        matches = [p for p in (self.parameters or [])
+                   if isinstance(p, cls) and path in p.paths]
+        if len(matches) != 1:
+            raise KeyError(
+                f'Expected exactly one {cls.__name__} whose group contains {path}, '
+                f'but found {len(matches)}.')
+        return matches[0]
 
 
 @dataclass
@@ -130,6 +143,24 @@ class SplineBilevelSolution(BilevelSolution):
     spline_nodes: np.ndarray, shape (num_knots, num_coords)
     """
     spline_nodes: np.ndarray = None
+
+
+@dataclass
+class MarkerPlacerSolution(Solution):
+    """
+    Solution for the `MarkerPlacer` solver.
+
+    Attributes
+    ----------
+    pose: np.ndarray, shape (num_independent_coords,)
+        Optimized independent-coordinate values for the placement pose, in the order of
+        the solver's ``q_indexes``.
+    marker_offsets: list[MarkerOffset]
+        The optimized marker placement offsets, each carrying its optimal ``value`` (an
+        XYZ translation expressed in the marker's base frame).
+    """
+    pose: np.ndarray = None
+    marker_offsets: list[MarkerOffset] = None
 
 
 ###########
@@ -653,17 +684,28 @@ class BilevelSolver(TrackingSolver):
     body_scale_regularization_weight: float, optional
         The weight to apply to the regularization term on the body scales in the
         bilevel optimization problem. Default is 0.0 (i.e., no regularization).
+    offset_regularization_weight: float, optional
+        The weight to apply to the regularization term on the marker/frame XYZ
+        offsets in the bilevel optimization problem, penalizing offsets away from
+        zero. Default is 0.0 (i.e., no regularization).
     """
+    PARAMETER_ORDER = (BodyScale, MarkerOffset, FrameOffset)
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
-                 orientation_weight=1.0, body_scale_regularization_weight=0.0):
+                 orientation_weight=1.0, body_scale_regularization_weight=0.0,
+                 offset_regularization_weight=0.0):
         super().__init__(model, convergence_tolerance, position_weight,
                          orientation_weight)
         if body_scale_regularization_weight < 0:
             raise ValueError(
                 f'Expected body_scale_regularization_weight to be non-negative, but '
                 f'got {body_scale_regularization_weight}.')
+        if offset_regularization_weight < 0:
+            raise ValueError(
+                f'Expected offset_regularization_weight to be non-negative, but '
+                f'got {offset_regularization_weight}.')
         self.body_scale_regularization_weight = body_scale_regularization_weight
-        self.body_scales: list[BodyScale] = []
+        self.offset_regularization_weight = offset_regularization_weight
+        self.parameters: list[Parameter] = []
 
     @staticmethod
     def compute_scale_regularization(s, weight, target=1.0):
@@ -694,52 +736,64 @@ class BilevelSolver(TrackingSolver):
         return weight * ca.sum((s - target)**2)
 
     @property
-    def body_scale_groups(self) -> list[BodyScaleGroup]:
+    def body_scales(self) -> list[BodyScale]:
         """
-        The list of `BodyScaleGroup` objects configured on this solver via
-        `add_body_scale`, in the order they were added. Useful for constructing a
-        `BilevelSolution` initial guess that matches the solver's configuration.
+        The registered `BodyScale` parameters, in registration order.
         """
-        return [bs.group for bs in self.body_scales]
+        return [p for p in self.parameters if isinstance(p, BodyScale)]
 
-    def add_body_scale(self, body_paths: str | list[str],
-                         lower_bound: float, upper_bound: float):
+    @property
+    def marker_offsets(self) -> list[MarkerOffset]:
         """
-        Add a set of XYZ body scales to be optimized over in the bilevel
-        optimization problem. Pass a single body path to scale one body, or a
-        list of body paths to share one set of body scales across a group of bodies
-        (e.g., for left-right symmetric scaling).
+        The registered `MarkerOffset` parameters, in registration order.
+        """
+        return [p for p in self.parameters if isinstance(p, MarkerOffset)]
+
+    @property
+    def frame_offsets(self) -> list[FrameOffset]:
+        """
+        The registered `FrameOffset` parameters, in registration order.
+        """
+        return [p for p in self.parameters if isinstance(p, FrameOffset)]
+
+    def add_parameter(self, parameter: Parameter):
+        """
+        Register a `Parameter` to be optimized over in the bilevel optimization problem.
+        The parameter is validated against the model at registration time.
 
         Parameters
         ----------
-        body_paths: str or list[str]
-            Absolute model path(s) to the body or bodies whose body scale will be
-            optimized. A list shares one set of body scales across every body in the
-            group.
-        lower_bound: float
-            Lower bound on each component of the XYZ body scales.
-        upper_bound: float
-            Upper bound on each component of the XYZ body scales.
+        parameter: Parameter
+            The parameter to optimize (e.g., a `BodyScale`, `MarkerOffset`, or
+            `FrameOffset`).
         """
-        if isinstance(body_paths, str):
-            body_paths = [body_paths]
-        if not body_paths:
-            raise ValueError(
-                'body_paths must be a non-empty string or list of strings.')
-        mobod_indexes = []
-        for path in body_paths:
-            body = osim.Body.safeDownCast(self.mc.model.getComponent(path))
-            mobod_indexes.append(int(body.getMobilizedBodyIndex()))
-        self.body_scales.append(BodyScale(
-            group=BodyScaleGroup(list(body_paths), mobod_indexes),
-            bounds=Bounds(lower_bound, upper_bound),))
+        parameter.validate(self.mc)
+        self.parameters.append(parameter)
 
     def create_bilevel_callback(self, name: str, itime: int,
                                 position_weight: float,
                                 orientation_weight: float) -> BilevelCostFunction:
-        body_scale_groups = [bs.group for bs in self.body_scales]
-        callback = BilevelCostFunction(name, self.mc, body_scale_groups)
 
+        # Enforce parameter ordering and create parameter groups.
+        ordered = self._order_parameters(self.parameters)
+        body_scale_groups = [p.to_group() for p in ordered
+                             if isinstance(p, BodyScale)]
+        marker_offset_groups = [p.to_group() for p in ordered
+                                if isinstance(p, MarkerOffset)]
+        frame_offset_groups = [p.to_group() for p in ordered
+                               if isinstance(p, FrameOffset)]
+
+        # Construct the bilevel callback function.
+        callback = BilevelCostFunction(name, self.mc, body_scale_groups,
+                                       marker_offset_groups, frame_offset_groups)
+
+        # Map each offset target path to the index of its offset group.
+        marker_index_of = {path: i for i, grp in enumerate(marker_offset_groups)
+                           for path in grp.component_paths}
+        frame_index_of = {path: i for i, grp in enumerate(frame_offset_groups)
+                          for path in grp.component_paths}
+
+        # Add the tracking cost terms for each frame.
         for data in self.theia_frame_data:
             for iframe, frame_path in enumerate(data.labels):
                 callback.add_frame_bilevel_cost(
@@ -747,50 +801,112 @@ class BilevelSolver(TrackingSolver):
                     data.positions.getRowAtIndex(itime).getElt(0, iframe),
                     data.orientations.getRowAtIndex(itime).getElt(0, iframe),
                     position_weight=position_weight,
-                    orientation_weight=orientation_weight)
+                    orientation_weight=orientation_weight,
+                    offset_group_index=frame_index_of.get(frame_path))
 
+        # Add the tracking cost terms for each marker.
         for data in self.marker_data:
             for iframe, marker_path in enumerate(data.labels):
                 callback.add_marker_bilevel_cost(marker_path,
                     data.positions.getRowAtIndex(itime).getElt(0, iframe),
-                    weight=position_weight)
+                    weight=position_weight,
+                    offset_group_index=marker_index_of.get(marker_path))
+
+        # Every offset group must be used by at least one registered task.
+        def assert_offset_groups_used(offset_group_indexes, offset_groups, label):
+            used = {g for g in offset_group_indexes if g is not None}
+            for i, group in enumerate(offset_groups):
+                if i not in used:
+                    raise ValueError(
+                        f'{label.capitalize()} offset group {group.component_paths} is '
+                        f'not tracked by any registered {label}; its offset would be '
+                        f'unconstrained.')
+        assert_offset_groups_used(callback.marker_cost.offset_group_indexes,
+                                  marker_offset_groups, 'marker')
+        assert_offset_groups_used(callback.frame_cost.offset_group_indexes,
+                                  frame_offset_groups, 'frame')
 
         return callback
 
     def update_model(self, model: osim.Model, solution: BilevelSolution) -> osim.Model:
         """
-        Apply the solution's optimized per-group XYZ body scales to the `model` and
-        return it. The body scales update the inboard and outboard frames of each Joint
-        only. `CustomJoint` translation scale factors, which may change as a side-effect
-        of `Model::scale()`, which is called under the hood, are reverted to the
+        Apply the solution's optimized parameters to `model` (e.g., body scales) and
+        return it.
         """
         model.initSystem()
 
-        # Get the original scale factors applied to translational components of
-        # `CustomJoint`s in the model before they are modified via scaling.
+        # Capture the translation scales currently on every CustomJoint, before
+        # Model::scale() incidentally modifies them, so they can be restored afterward.
         translation_scales = ModelCache.get_custom_joint_translation_scales(model)
 
         # Construct a scaler using the optimized body scales as manual scale factors.
-        # Calls `Model::scale()` underneath the hood.
+        # This calls Model::scale() under the hood. Body scales are baked via the Scaler
+        # rather than each BodyScale's apply_to_model (see BodyScale.apply_to_model).
         scaler = Scaler(model)
         axes = (Axis.XAxis, Axis.YAxis, Axis.ZAxis)
-        for group, factors in zip(solution.body_scale_groups, solution.body_scales):
-            for body_path in group.body_paths:
+        for parameter in solution.parameters:
+            if not isinstance(parameter, BodyScale):
+                continue
+            for body_path in parameter.paths:
                 body_name = osim.Body.safeDownCast(
                     model.getComponent(body_path)).getName()
                 for ax_idx, axis in enumerate(axes):
                     scaler.add_body_scale(ManualBodyScale(
-                        body_name, axis, float(factors[ax_idx])))
+                        body_name, axis, float(parameter.value[ax_idx])))
         model = scaler.scale()
 
-        # Undo any changes to CustomJoint translations induced by `Model::scale()`,
-        # since these changes are not part of any bilevel optimization.
+        # Revert the incidental changes Model::scale() makes to CustomJoint translation
+        # functions, since these are not part of the bilevel optimization.
         ModelCache.apply_custom_joint_translation_scales(model, translation_scales)
+
+        # Apply the remaining optimized parameters (e.g., marker and frame offsets) to
+        # the scaled model. Body scales are handled above via the Scaler.
+        for parameter in solution.parameters:
+            if not isinstance(parameter, BodyScale):
+                parameter.apply_to_model(model)
 
         # Finalize the system and return.
         model.finalizeConnections()
         model.initSystem()
         return model
+
+    def _order_parameters(self, parameters: list[Parameter]) -> list[Parameter]:
+        """
+        Return `parameters` reordered so that parameters of the same type are contiguous
+        and types appear in `PARAMETER_ORDER`. Within a type, registration order is
+        preserved. This is the order in which parameter variable blocks are concatenated
+        into the optimization vector. Raise a ValueError if any parameter's type is not
+        listed in `PARAMETER_ORDER`, so a new type is never silently dropped.
+        """
+        ordered = [p for cls in self.PARAMETER_ORDER
+                    for p in parameters if type(p) is cls]
+        if len(ordered) != len(parameters):
+            unknown = sorted({type(p).__name__ for p in parameters
+                            if type(p) not in self.PARAMETER_ORDER})
+            raise ValueError(
+                f'order_parameters received parameter type(s) not listed in '
+                f'{self.PARAMETER_ORDER}: {unknown}.')
+        return ordered
+
+    def _validate_guess(self, guess: Solution):
+        super()._validate_guess(guess)
+        expected = self._order_parameters(self.parameters)
+        got = self._order_parameters(guess.parameters or [])
+        if len(got) != len(expected):
+            raise ValueError(
+                f'Initial guess has {len(got)} parameter(s) but the solver is '
+                f'configured with {len(expected)}.')
+        for e, g in zip(expected, got):
+            if type(g) is not type(e) or g.paths != e.paths:
+                raise ValueError(
+                    f'Initial guess parameters do not match the solver configuration. '
+                    f'Expected {type(e).__name__} on {e.paths}, got '
+                    f'{type(g).__name__} on {g.paths}.')
+            if g.value is None or np.asarray(g.value).shape != (e.num_variables,):
+                shape = None if g.value is None else np.asarray(g.value).shape
+                raise ValueError(
+                    f'Initial guess value for {type(e).__name__} on {e.paths} must '
+                    f'have shape ({e.num_variables},), got {shape}.')
 
 
 class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
@@ -812,6 +928,8 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
         See `TrackingSolver`.
     body_scale_regularization_weight: float, optional
         See `BilevelSolver`.
+    offset_regularization_weight: float, optional
+        See `BilevelSolver`.
     degree: int, optional
         See `SplineBasedSolverMixin`.
     knot_interval: float, optional
@@ -821,12 +939,14 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
 
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
                  orientation_weight=1.0, body_scale_regularization_weight=0.0,
+                 offset_regularization_weight=0.0,
                  degree=3, knot_interval=0.05):
         super().__init__(model, convergence_tolerance=convergence_tolerance,
                          position_weight=position_weight,
                          orientation_weight=orientation_weight,
                          body_scale_regularization_weight=(
                              body_scale_regularization_weight),
+                         offset_regularization_weight=offset_regularization_weight,
                          degree=degree, knot_interval=knot_interval)
 
     def solve(self, guess: SplineBilevelSolution = None) -> SplineBilevelSolution:
@@ -844,11 +964,27 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
         # Pre-compute the spline basis matrix and its derivative.
         B, dB = self.build_spline_basis_matrix(times, knots)
 
-        # Define the optimization variables: spline control points and body scale
-        # factors.
-        n_groups = len(self.body_scales)
+        # Order the registered parameters by type.
+        ordered = self._order_parameters(self.parameters)
+        num_scales = sum(p.num_variables for p in ordered
+                         if isinstance(p, BodyScale))
+        num_markers = sum(p.num_variables for p in ordered
+                          if isinstance(p, MarkerOffset))
+        num_frames = sum(p.num_variables for p in ordered
+                         if isinstance(p, FrameOffset))
+
+        # Apply the parameters from the initial guess to the solver's list of registered
+        # parameters.
+        if guess is not None:
+            for sp, gp in zip(ordered, self._order_parameters(guess.parameters)):
+                sp.value = np.asarray(gp.value, dtype=float)
+
+        # Define the optimization variables: spline control points, body scale factors,
+        # marker offsets, and frame offsets.
         coeffs = ca.MX.sym('coeffs', num_knots, len(self.q_indexes))
-        s = ca.MX.sym('body_scales', 3 * n_groups)
+        s = ca.MX.sym('body_scales', num_scales)
+        mo = ca.MX.sym('marker_offsets', num_markers)
+        fo = ca.MX.sym('frame_offsets', num_frames)
         x0 = []
         lbx = []
         ubx = []
@@ -860,17 +996,10 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
             lbx += [coord.getRangeMin()] * num_knots
             ubx += [coord.getRangeMax()] * num_knots
 
-        # Set the guess and bounds for body scales.
-        if guess is None:
-            for bs in self.body_scales:
-                x0 += [1.0, 1.0, 1.0]
-                lbx += [bs.bounds.lower_bound] * 3
-                ubx += [bs.bounds.upper_bound] * 3
-        else:
-            x0 += guess.body_scales.flatten().tolist()
-            for bs in self.body_scales:
-                lbx += [bs.bounds.lower_bound] * 3
-                ubx += [bs.bounds.upper_bound] * 3
+        # Append each parameter's initial guess and bounds, in type order, matching the
+        # [coeffs, s, mo, fo] layout of the optimization vector below.
+        for p in ordered:
+            p.append_guess_and_bounds(x0, lbx, ubx)
 
         # Map the control points to the full predicted trajectory via the spline basis
         # matrix.
@@ -884,16 +1013,18 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
                 f'scaled_tracking_cost_time_{itime}', itime,
                 position_weight=self.position_weight,
                 orientation_weight=self.orientation_weight))
-            tracking_errors[itime] = callbacks[itime](q[itime, :].T, s)
+            tracking_errors[itime] = callbacks[itime](q[itime, :].T, s, mo, fo)
 
         # Compute total cost.
         f_track = self.compute_average_trapezoidal_error(tracking_errors, times)
         f_scale_reg = self.compute_scale_regularization(
             s, weight=self.body_scale_regularization_weight)
-        f = f_track + f_scale_reg
+        f_offset_reg = self.compute_scale_regularization(
+            ca.vertcat(mo, fo), weight=self.offset_regularization_weight, target=0.0)
+        f = f_track + f_scale_reg + f_offset_reg
 
         # Solve.
-        nlp = {'x': ca.vertcat(ca.vec(coeffs), s), 'f': f}
+        nlp = {'x': ca.vertcat(ca.vec(coeffs), s, mo, fo), 'f': f}
         opts = {}
         opts['ipopt'] = self.get_ipopt_options(print_level=5)
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
@@ -904,19 +1035,145 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
         num_coeff_vars = num_knots * len(self.q_indexes)
         coeffs_opt = ca.reshape(sol['x'][:num_coeff_vars], num_knots,
                                 len(self.q_indexes))
-        q_opt = np.array(B @ coeffs_opt)    # (num_times, num_coords)
+        q_opt = np.array(B @ coeffs_opt)
         qdot_opt = np.array(dB @ coeffs_opt)
 
-        # Slice body scales from the flat solution vector.
+        # Slice each parameter's optimized value from the flat solution vector.
         x_flat = np.array(sol['x']).flatten()
-        scales_flat = x_flat[num_coeff_vars : num_coeff_vars + 3 * n_groups]
-        body_scales_mat = scales_flat.reshape(n_groups, 3) if n_groups else \
-            np.zeros((0, 3))
+        i = num_coeff_vars
+        for p in ordered:
+            p.value = x_flat[i : i + p.num_variables].reshape(-1)
+            i += p.num_variables
+        solution_parameters = [p.with_value(p.value) for p in self.parameters]
 
         return SplineBilevelSolution(
             states_table=TrackingSolution.create_states_table(
                 self.mc.model, self.state, self.q_indexes, times, q_opt, qdot_opt),
-            body_scales=body_scales_mat,
-            body_scale_groups=self.body_scale_groups,
+            parameters=solution_parameters,
             spline_nodes=np.array(coeffs_opt),
         )
+
+
+#################
+# MARKER PLACER #
+#################
+
+class MarkerPlacer(Solver):
+    """
+    A solver for placing unfixed, e.g. "tracking", markers on the model.
+
+    The solver uses minimize the squared distance between the model's marker
+    positions and the reference marker positions provided by a `MarkerSource`.
+    Markers whose '<fixed>' property is set to ``True`` will be use to pose the
+    model, as in a typical inverse kinematics problem. Markers whose '<fixed>'
+    property is set to ``False`` will have the position offsets optimized to place
+    them as close as possible to the reference positions.
+
+    Parameters
+    ----------
+    model: str or osim.Model
+        See `Solver`.
+    marker_source: MarkerSource
+        A MarkerSource as reference data for the marker placement optimization
+        problem. The column labels must match the absolute paths of the markers in
+        the model.
+    marker_index: int, optional
+        The row index of the marker positions table from the marker source to use
+        as the reference positions for the optimization.
+    offset_bounds: Bounds, optional
+        The bounds on the marker position offsets to optimize. Default is
+        [-0.5, 0.5] meters in each direction.
+    convergence_tolerance: float, optional
+        See `Solver`.
+    """
+    _guess_type = MarkerPlacerSolution
+
+    def __init__(self, model: osim.Model, marker_source: MarkerSource,
+                 marker_index: int = 0, offset_bounds: Bounds = Bounds(-0.5, 0.5),
+                 convergence_tolerance=1e-4):
+        super().__init__(model, convergence_tolerance)
+        self.marker_source = marker_source
+        self.marker_index = marker_index
+        self.offset_bounds = offset_bounds
+
+    def solve(self, guess: MarkerPlacerSolution = None) -> MarkerPlacerSolution:
+
+        # Validate the marker source and extract the marker paths to track.
+        self.marker_source.validate_marker_paths(self.mc.model)
+        positions = self.marker_source.get_positions_table()
+        marker_paths = positions.getColumnLabels()
+
+        # Validate the guess.
+        if guess is not None:
+            self._validate_guess(guess)
+
+        # Define the marker offset parameters.
+        marker_offsets: list[MarkerOffset] = []
+        initial_offset = np.zeros(3)
+        for tracking_marker in self.mc.get_tracking_marker_paths():
+            marker_offsets.append(
+                MarkerOffset(tracking_marker, self.offset_bounds, initial_offset))
+        marker_offset_groups = [mo.to_group() for mo in marker_offsets]
+
+        # Define variables.
+        num_markers = sum(mo.num_variables for mo in marker_offsets)
+        q = ca.MX.sym('q', len(self.q_indexes))
+        s = ca.MX.sym('body_scales', 0)
+        mo = ca.MX.sym('marker_offsets', num_markers)
+        fo = ca.MX.sym('frame_offsets', 0)
+
+        # Define bounds.
+        x0 = []
+        lbx = []
+        ubx = []
+        for coord_path in self.q_map:
+            coord = osim.Coordinate.safeDownCast(self.mc.model.getComponent(coord_path))
+            x0.append(coord.getDefaultValue())
+            lbx.append(coord.getRangeMin())
+            ubx.append(coord.getRangeMax())
+        for marker_offset in marker_offsets:
+            marker_offset.append_guess_and_bounds(x0, lbx, ubx)
+
+        # Define the cost bilevel function.
+        callback = BilevelCostFunction('marker_placer_cost', self.mc, [],
+                                       marker_offset_groups, [])
+        marker_index_of = {path: i for i, grp in enumerate(marker_offset_groups)
+                           for path in grp.component_paths}
+        for imarker, marker_path in enumerate(marker_paths):
+            callback.add_marker_bilevel_cost(marker_path,
+                positions.getRowAtIndex(self.marker_index).getElt(0, imarker),
+                weight=1.0, offset_group_index=marker_index_of.get(marker_path))
+        f = callback(q, s, mo, fo)
+
+        # Solve.
+        nlp = {'x': ca.vertcat(q, s, mo, fo), 'f': f}
+        opts = {}
+        opts['ipopt'] = self.get_ipopt_options(print_level=5)
+        solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
+        sol = solver(x0=x0, lbx=lbx, ubx=ubx)
+
+        # Slice the optimized pose and marker offsets from the flat solution vector.
+        x_flat = np.array(sol['x']).flatten()
+        num_coords = len(self.q_indexes)
+        pose = x_flat[:num_coords]
+        i = num_coords
+        for marker_offset in marker_offsets:
+            marker_offset.value = x_flat[
+                i : i + marker_offset.num_variables].reshape(-1)
+            i += marker_offset.num_variables
+
+        return MarkerPlacerSolution(pose=pose, marker_offsets=marker_offsets)
+
+    def update_model(self, model: osim.Model,
+                     solution: MarkerPlacerSolution) -> osim.Model:
+        """
+        Apply the solution's optimized marker placement offsets to `model` in place and
+        return it. Each offset is baked into its marker's ``location`` property as an
+        additive translation expressed in the marker's base frame.
+        """
+        model.initSystem()
+        for marker_offset in solution.marker_offsets:
+            marker_offset.apply_to_model(model)
+        model.finalizeConnections()
+        model.initSystem()
+        return model

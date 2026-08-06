@@ -341,6 +341,34 @@ class MarkerSource(DataSource):
 
         return table
 
+    def validate_marker_paths(self, model: osim.Model):
+        """
+        Validate that each marker label in this source matches the absolute path of a
+        marker in ``model``. Does not disallow extra markers in the model.
+
+        Parameters
+        ----------
+        model : osim.Model
+            Model to compare against.
+
+        Raises
+        ------
+        ValueError
+            If any marker label in this source is not the absolute path of a marker in
+            ``model``.
+        """
+        table = self.get_positions_table()
+        source_labels = set(table.getColumnLabels())
+        model_labels = set()
+        markerset = model.getMarkerSet()
+        for i in range(markerset.getSize()):
+            model_labels.add(markerset.get(i).getAbsolutePathString())
+        missing_in_model = sorted(source_labels - model_labels)
+        if missing_in_model:
+            raise ValueError(
+                f"Marker labels in {self.trc_filepath} are not all present in "
+                f"{model.getName()}. Missing from model: {missing_in_model}.")
+
 
 class TheiaFrameSource(DataSource):
     """

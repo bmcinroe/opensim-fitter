@@ -6,8 +6,10 @@ import opensim as osim
 from osimfit.data_sources import MarkerSource
 from osimfit.scaling import (Axis, PositionBasedScaler, MarkerMeasurement,
                              AnthropometricMeasurement, AnthropometricScaler)
-from osimfit.solvers import (InverseKinematicsSolver, SplineBasedBilevelSolver,
-                             SplineBilevelSolution)
+from osimfit.solvers import (InverseKinematicsSolver, MarkerPlacer,
+                             SplineBasedBilevelSolver, SplineBilevelSolution)
+from osimfit.model import BodyScale, MarkerOffset
+from osimfit.bounds import Bounds
 from osimfit.utilities import (compute_marker_errors, plot_marker_errors,
                                plot_coordinates)
 
@@ -31,7 +33,8 @@ model.initSystem()
 
 # Append the markerset used for scaling and inverse kinematics to the model.
 markerset = model.updMarkerSet()
-mset = osim.MarkerSet('markerset_walk_preScale.xml')
+markerset.clearAndDestroy()
+mset = osim.MarkerSet('markerset_walk.xml')
 for i in range(mset.getSize()):
     markerset.cloneAndAppend(mset.get(i))
 
@@ -206,17 +209,22 @@ for segment, ansur_label, axis in anthro_scale_rules:
 anthro_scaled_model = anthropometric_scaler.scale()
 anthro_scaled_model.printToXML('subject_anthro_scaled_walk.osim')
 
+# Place markers
+# -------------
+# Create a new marker source with updated column labels representing the full path to
+# each marker.
+marker_source = MarkerSource(markers_fpath, label_map=marker_map)
+placer = MarkerPlacer(anthro_scaled_model, marker_source)
+solution = placer.solve()
+# Update both 'anthro_scaled_model', which we'll use to generate a guess via inverse
+# kinematics, and 'unscaled_model' which we'll use in the final bilevel optimization.
+anthro_scaled_model = placer.update_model(anthro_scaled_model, solution)
+unscaled_model = placer.update_model(unscaled_model, solution)
 
 # Frame-by-frame inverse kinematics
 # ---------------------------------
-# Create a new MarkerSource with updated labels and markers removed.
-columns_to_remove = ['R.TH1', 'R.TH2', 'R.TH3', 'R.SH1', 'R.SH2', 'R.SH3', 'R.SH4',
-                     'L.TH1', 'L.TH2', 'L.TH3', 'L.TH4', 'L.SH1', 'L.SH2', 'L.SH3']
-marker_source = MarkerSource(markers_fpath, label_map=marker_map,
-                             labels_to_remove=columns_to_remove)
-
 # Run the frame-by-frame IK solver.
-solver = InverseKinematicsSolver(model,
+solver = InverseKinematicsSolver(anthro_scaled_model,
                                  convergence_tolerance=1e-2,
                                  position_weight=1.0)
 solver.add_marker_reference_data(marker_source)
@@ -232,26 +240,35 @@ solver = SplineBasedBilevelSolver(unscaled_model,
                                   convergence_tolerance=1e-2,
                                   knot_interval=0.05,
                                   position_weight=5.0,
-                                  body_scale_regularization_weight=1e-1)
+                                  body_scale_regularization_weight=1e-1,
+                                  offset_regularization_weight=1e-3)
 solver.add_marker_reference_data(marker_source)
 # Add body scales for each body in the model. Apply the same scales to groups of bodies,
 # including those that should share left-right symmetry.
-bounds = [0.5, 2.0]
-solver.add_body_scale('/bodyset/torso', bounds[0], bounds[1])
-solver.add_body_scale('/bodyset/pelvis', bounds[0], bounds[1])
-solver.add_body_scale(['/bodyset/humerus_r', '/bodyset/humerus_l'],
-                      bounds[0], bounds[1])
-solver.add_body_scale(['/bodyset/radius_r', '/bodyset/radius_l',
-                       '/bodyset/ulna_r', '/bodyset/ulna_l',
-                       '/bodyset/hand_r', '/bodyset/hand_l'],
-                      bounds[0], bounds[1])
-solver.add_body_scale(['/bodyset/femur_r', '/bodyset/femur_l',
-                       '/bodyset/patella_r', '/bodyset/patella_l'],
-                      bounds[0], bounds[1])
-solver.add_body_scale(['/bodyset/tibia_r', '/bodyset/tibia_l'], bounds[0], bounds[1])
-solver.add_body_scale(['/bodyset/calcn_r', '/bodyset/calcn_l',
-                       '/bodyset/toes_r', '/bodyset/toes_l'],
-                      bounds[0], bounds[1])
+bounds = Bounds(0.5, 2.0)
+solver.add_parameter(BodyScale('/bodyset/torso', bounds, np.ones(3)))
+solver.add_parameter(BodyScale('/bodyset/pelvis', bounds, np.ones(3)))
+solver.add_parameter(BodyScale(['/bodyset/humerus_r', '/bodyset/humerus_l'],
+                               bounds, np.ones(3)))
+solver.add_parameter(BodyScale(['/bodyset/radius_r', '/bodyset/radius_l',
+                                '/bodyset/ulna_r', '/bodyset/ulna_l',
+                                '/bodyset/hand_r', '/bodyset/hand_l'],
+                               bounds, np.ones(3)))
+solver.add_parameter(BodyScale(['/bodyset/femur_r', '/bodyset/femur_l',
+                                '/bodyset/patella_r', '/bodyset/patella_l'],
+                               bounds, np.ones(3)))
+solver.add_parameter(BodyScale(['/bodyset/tibia_r', '/bodyset/tibia_l'],
+                               bounds, np.ones(3)))
+solver.add_parameter(BodyScale(['/bodyset/calcn_r', '/bodyset/calcn_l',
+                                '/bodyset/toes_r', '/bodyset/toes_l'],
+                               bounds, np.ones(3)))
+# Add marker offset parameters for the tracking markers.
+bounds = Bounds(-0.25, 0.25)
+for i in range(unscaled_model.getMarkerSet().getSize()):
+    marker = unscaled_model.getMarkerSet().get(i)
+    if not marker.get_fixed():
+        path = marker.getAbsolutePathString()
+        solver.add_parameter(MarkerOffset(path, bounds, np.zeros(3)))
 
 # Combine the per-body XYZ body scales from the two scaling stages above by
 # element-wise multiplication.
@@ -259,23 +276,22 @@ def per_body_factors(scaleset, body_name):
     factors = scaleset.get(body_name).getScaleFactors()
     return np.array([factors[0], factors[1], factors[2]])
 
-body_scale_guess = np.zeros((len(solver.body_scale_groups), 3))
-for igroup, group in enumerate(solver.body_scale_groups):
+parameters_guess = [p.with_value(p.value) for p in solver.parameters]
+body_scales = [p for p in parameters_guess if isinstance(p, BodyScale)]
+for scale in body_scales:
     per_body = []
-    for body_path in group.body_paths:
+    for body_path in scale.paths:
         body_name = body_path.rsplit('/', 1)[-1]
         per_body.append(
             per_body_factors(position_scaler.scaleset, body_name)
             * per_body_factors(anthropometric_scaler.scaleset, body_name))
-    body_scale_guess[igroup, :] = np.mean(per_body, axis=0)
-
+    scale.value = np.mean(per_body, axis=0)
 
 # Create an initial guess based on the the kinematics from the inverse kinematics
-# solution and the combined body scales.
+# solution and the combined body scales set above.
 guess = SplineBilevelSolution(
     states_table=osim.TimeSeriesTable('walk_ik_solution.sto'),
-    body_scale_groups=solver.body_scale_groups,
-    body_scales=body_scale_guess)
+    parameters=parameters_guess)
 bilevel_solution = solver.solve(guess)
 sto.write(bilevel_solution.states_table, 'walk_bilevel_solution.sto')
 bilevel_scaled_model = solver.update_model(unscaled_model, bilevel_solution)
